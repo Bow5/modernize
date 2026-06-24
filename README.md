@@ -1,6 +1,6 @@
 # modernize
 
-A small source rewriter for the [Go language fork](https://github.com/golang/go) that uses `T!` result types and `!` error propagation.
+A small source rewriter for [BetterGo](https://github.com/BetterGo3/BetterGo) that uses `T!` result types and `!` error propagation.
 
 It walks a directory of Go files and updates common error-handling patterns to the shorter fork syntax. Files are rewritten in place.
 
