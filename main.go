@@ -43,7 +43,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	var changedFiles, errBangTotal, nilableTotal int
+	var changedFiles, errBangTotal, nilableTotal, fmtErrorfTotal, customErrTotal int
 	for _, pkg := range pkgs {
 		c, n, e := modernizePackage(pkg)
 		if e != nil {
@@ -53,8 +53,11 @@ func main() {
 		changedFiles += c
 		errBangTotal += n.errBang
 		nilableTotal += n.nilable
+		fmtErrorfTotal += n.fmtErrorf
+		customErrTotal += n.customErr
 	}
-	fmt.Fprintf(os.Stderr, "modernized %d files (%d nilable, %d err! rewrites)\n", changedFiles, nilableTotal, errBangTotal)
+	fmt.Fprintf(os.Stderr, "modernized %d files (%d nilable, %d err! rewrites, %d fmt.Errorf→errors.New, %d custom errors)\n",
+		changedFiles, nilableTotal, errBangTotal, fmtErrorfTotal, customErrTotal)
 }
 
 type pkgFiles struct {
@@ -94,8 +97,10 @@ func collectPackages(root string) ([]pkgFiles, error) {
 }
 
 type rewriteCounts struct {
-	errBang int
-	nilable int
+	errBang   int
+	nilable   int
+	fmtErrorf int
+	customErr int
 }
 
 func modernizePackage(pkg pkgFiles) (changedFiles int, counts rewriteCounts, err error) {
@@ -115,7 +120,7 @@ func modernizePackage(pkg pkgFiles) (changedFiles int, counts rewriteCounts, err
 	nilableChanged := make([]bool, len(files))
 
 	for i, path := range pkg.paths {
-		_, n, fileChanged, e := modernizeParsedFile(fset, files[i], path, nilableChanged[i])
+		_, countsPart, fileChanged, e := modernizeParsedFile(fset, files[i], path, nilableChanged[i])
 		if e != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", path, e)
 			continue
@@ -124,7 +129,9 @@ func modernizePackage(pkg pkgFiles) (changedFiles int, counts rewriteCounts, err
 			changedFiles++
 			fmt.Println(path)
 		}
-		counts.errBang += n
+		counts.errBang += countsPart.errBang
+		counts.fmtErrorf += countsPart.fmtErrorf
+		counts.customErr += countsPart.customErr
 		if nilableChanged[i] && fileChanged {
 			counts.nilable++
 		}
@@ -132,7 +139,7 @@ func modernizePackage(pkg pkgFiles) (changedFiles int, counts rewriteCounts, err
 	return changedFiles, counts, nil
 }
 
-func modernizeParsedFile(fset *token.FileSet, f *ast.File, path string, forceWrite bool) (nilableChanged bool, errBang int, changed bool, err error) {
+func modernizeParsedFile(fset *token.FileSet, f *ast.File, path string, forceWrite bool) (nilableChanged bool, counts rewriteCounts, changed bool, err error) {
 	mod := &fileModernizer{fset: fset, file: f}
 	ast.Inspect(f, func(n ast.Node) bool {
 		if fn, ok := n.(*ast.FuncDecl); ok {
@@ -143,15 +150,17 @@ func modernizeParsedFile(fset *token.FileSet, f *ast.File, path string, forceWri
 		}
 		return true
 	})
+	counts.fmtErrorf, counts.customErr = mod.modernizeStructuredErrors()
+	counts.errBang = mod.errBangCount
 
 	if !mod.changed && !forceWrite {
-		return false, mod.errBangCount, false, nil
+		return false, counts, false, nil
 	}
 
 	if err := writeFormattedFile(path, fset, f); err != nil {
-		return false, 0, false, err
+		return false, counts, false, err
 	}
-	return forceWrite, mod.errBangCount, true, nil
+	return forceWrite, counts, true, nil
 }
 
 func modernizeFile(path string) (bool, int, error) {
@@ -161,8 +170,8 @@ func modernizeFile(path string) (bool, int, error) {
 		return false, 0, err
 	}
 	f.NilablePointersRegions = buildNilablePointersRegions(collectNilablePointersDirectives(f))
-	_, n, changed, err := modernizeParsedFile(fset, f, path, applyPtrAnnotations(fset, []*ast.File{f})[0])
-	return changed, n, err
+	_, countsPart, changed, err := modernizeParsedFile(fset, f, path, applyPtrAnnotations(fset, []*ast.File{f})[0])
+	return changed, countsPart.errBang, err
 }
 
 type fileModernizer struct {

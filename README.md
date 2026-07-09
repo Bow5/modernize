@@ -67,6 +67,32 @@ fn()!
 
 Skips `vendor/`, `.git/`, `testdata/`, and `_test.go` files.
 
+### Structured errors (`errors.Base`)
+
+**`fmt.Errorf` → `errors.New`** when the format string is a literal with no `%w` (no error chaining):
+
+```go
+return fmt.Errorf("something failed")       →  return errors.New("something failed")
+return fmt.Errorf("bad %s", name)           →  return errors.New("bad %s", name)
+return fmt.Errorf("wrap: %w", err)          →  unchanged
+```
+
+**Custom error types** that define `Error() string` get an `errors.Base` embed:
+
+- **Message-only types** (single `msg` / `message` field, `Error()` returns it): field and `Error()` are removed; constructions become `errors.NewCustom[YourError](...)`.
+- **Types with extra domain fields**: `errors.Base` is added; constructor returns are rewritten to call `errors.InitCustom(&e.Base, "%s", e.Error())`.
+
+```go
+type AppError struct { msg string }
+func (e AppError) Error() string { return e.msg }
+func fail() error { return AppError{msg: "oops"} }
+```
+→
+```go
+type AppError struct { errors.Base }
+func fail() error { return errors.NewCustom[AppError]("oops") }
+```
+
 ## Requirements
 
 Build and run with **Bow** as `GOROOT` — the output uses `T!`, `expr!`, and `*T?`, which standard Go does not accept.
