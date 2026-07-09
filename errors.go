@@ -36,16 +36,20 @@ func (m *fileModernizer) modernizeStructuredErrors() (fmtErrorf, customErrors in
 		importsAdded:   map[string]bool{},
 	}
 	em.collectCustomErrorTypes()
-	if len(em.types) == 0 {
-		fmtErrorf = em.rewriteFmtErrorfCalls()
-		return fmtErrorf, 0
+	if len(em.types) > 0 {
+		customErrors = em.rewriteCustomErrorTypes()
+		if len(em.pkgEmbed) > 0 {
+			customErrors += em.rewriteRemovedMessageFieldRefs()
+		}
+		customErrors += em.rewriteCustomErrorUsages()
 	}
-	customErrors = em.rewriteCustomErrorTypes()
-	if len(em.pkgEmbed) > 0 {
-		customErrors += em.rewriteRemovedMessageFieldRefs()
+	if len(em.pkgExtraFields) > 0 {
+		customErrors += em.rewritePositionalErrorComposites()
 	}
-	customErrors += em.rewriteCustomErrorUsages()
 	fmtErrorf = em.rewriteFmtErrorfCalls()
+	if em.pruneUnusedImport("fmt") {
+		em.mark()
+	}
 	return fmtErrorf, customErrors
 }
 
@@ -424,6 +428,163 @@ func collectPackageEmbedOnlyTypes(files []*ast.File) map[string]string {
 		}
 	}
 	return out
+}
+
+func collectPackageHasExtraErrorTypes(files []*ast.File) map[string][]string {
+	out := map[string][]string{}
+	for _, f := range files {
+		em := &errorsModernizer{
+			fileModernizer: &fileModernizer{file: f},
+			types:          map[string]*customErrorType{},
+		}
+		em.collectCustomErrorTypes()
+		for name, info := range em.types {
+			if !info.hasExtra {
+				continue
+			}
+			var fields []string
+			for _, field := range info.structType.Fields.List {
+				if len(field.Names) == 0 {
+					continue
+				}
+				for _, n := range field.Names {
+					fields = append(fields, n.Name)
+				}
+			}
+			if len(fields) > 0 {
+				out[name] = fields
+			}
+		}
+	}
+	return out
+}
+
+func compositeTypeName(t ast.Expr) (string, bool) {
+	switch typ := ast.Unparen(t).(type) {
+	case *ast.Ident:
+		return typ.Name, true
+	case *ast.SelectorExpr:
+		return typ.Sel.Name, true
+	}
+	return "", false
+}
+
+func (em *errorsModernizer) rewritePositionalErrorComposites() int {
+	count := 0
+	ast.Inspect(em.file, func(n ast.Node) bool {
+		cl, ok := n.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		if em.keyPositionalComposite(cl) {
+			count++
+		}
+		return true
+	})
+	return count
+}
+
+func (em *errorsModernizer) keyPositionalComposite(cl *ast.CompositeLit) bool {
+	if len(cl.Elts) == 0 {
+		return false
+	}
+	for _, elt := range cl.Elts {
+		if _, ok := elt.(*ast.KeyValueExpr); ok {
+			return false
+		}
+	}
+	typeName, ok := compositeTypeName(cl.Type)
+	if !ok {
+		return false
+	}
+	fields, ok := em.pkgExtraFields[typeName]
+	if !ok || len(fields) == 0 {
+		return false
+	}
+	if len(cl.Elts) > len(fields) {
+		return false
+	}
+	newElts := make([]ast.Expr, len(cl.Elts))
+	for i, elt := range cl.Elts {
+		newElts[i] = &ast.KeyValueExpr{
+			Key:   &ast.Ident{Name: fields[i]},
+			Value: elt,
+		}
+	}
+	cl.Elts = newElts
+	em.mark()
+	return true
+}
+
+func (em *errorsModernizer) importLocalName(path string) string {
+	for _, imp := range em.file.Imports {
+		p, _ := strconv.Unquote(imp.Path.Value)
+		if p != path {
+			continue
+		}
+		if imp.Name != nil {
+			return imp.Name.Name
+		}
+		return pathBaseName(path)
+	}
+	return ""
+}
+
+func pathBaseName(path string) string {
+	if i := strings.LastIndex(path, "/"); i >= 0 {
+		return path[i+1:]
+	}
+	return path
+}
+
+func (em *errorsModernizer) pruneUnusedImport(path string) bool {
+	local := em.importLocalName(path)
+	if local == "" {
+		return false
+	}
+	used := false
+	ast.Inspect(em.file, func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		id, ok := sel.X.(*ast.Ident)
+		if ok && id.Name == local {
+			used = true
+			return false
+		}
+		return true
+	})
+	if used {
+		return false
+	}
+	return em.removeImport(path)
+}
+
+func (em *errorsModernizer) removeImport(path string) bool {
+	for di, decl := range em.file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.IMPORT {
+			continue
+		}
+		for si, spec := range gen.Specs {
+			imp, ok := spec.(*ast.ImportSpec)
+			if !ok {
+				continue
+			}
+			p, _ := strconv.Unquote(imp.Path.Value)
+			if p != path {
+				continue
+			}
+			gen.Specs = append(gen.Specs[:si], gen.Specs[si+1:]...)
+			if len(gen.Specs) == 0 {
+				em.file.Decls = append(em.file.Decls[:di], em.file.Decls[di+1:]...)
+			}
+			em.mark()
+			return true
+		}
+	}
+	return false
 }
 
 func rewriteSelectorToBaseMessage(sel *ast.SelectorExpr) {

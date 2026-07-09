@@ -119,9 +119,10 @@ func modernizePackage(pkg pkgFiles) (changedFiles int, counts rewriteCounts, err
 	// still too aggressive for large codebases like minio.
 	nilableChanged := make([]bool, len(files))
 	pkgEmbed := collectPackageEmbedOnlyTypes(files)
+	pkgExtraFields := collectPackageHasExtraErrorTypes(files)
 
 	for i, path := range pkg.paths {
-		_, countsPart, fileChanged, e := modernizeParsedFile(fset, files[i], path, nilableChanged[i], pkgEmbed)
+		_, countsPart, fileChanged, e := modernizeParsedFile(fset, files[i], path, nilableChanged[i], pkgEmbed, pkgExtraFields)
 		if e != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", path, e)
 			continue
@@ -140,8 +141,8 @@ func modernizePackage(pkg pkgFiles) (changedFiles int, counts rewriteCounts, err
 	return changedFiles, counts, nil
 }
 
-func modernizeParsedFile(fset *token.FileSet, f *ast.File, path string, forceWrite bool, pkgEmbed map[string]string) (nilableChanged bool, counts rewriteCounts, changed bool, err error) {
-	mod := &fileModernizer{fset: fset, file: f, pkgEmbed: pkgEmbed}
+func modernizeParsedFile(fset *token.FileSet, f *ast.File, path string, forceWrite bool, pkgEmbed map[string]string, pkgExtraFields map[string][]string) (nilableChanged bool, counts rewriteCounts, changed bool, err error) {
+	mod := &fileModernizer{fset: fset, file: f, pkgEmbed: pkgEmbed, pkgExtraFields: pkgExtraFields}
 
 	// (T, error) → T! signatures and try/bang patterns inside newly converted bodies.
 	ast.Inspect(f, func(n ast.Node) bool {
@@ -184,16 +185,17 @@ func modernizeFile(path string) (bool, int, error) {
 		return false, 0, err
 	}
 	f.NilablePointersRegions = buildNilablePointersRegions(collectNilablePointersDirectives(f))
-	_, countsPart, changed, err := modernizeParsedFile(fset, f, path, applyPtrAnnotations(fset, []*ast.File{f})[0], nil)
+	_, countsPart, changed, err := modernizeParsedFile(fset, f, path, applyPtrAnnotations(fset, []*ast.File{f})[0], nil, nil)
 	return changed, countsPart.errBang, err
 }
 
 type fileModernizer struct {
-	fset         *token.FileSet
-	file         *ast.File
-	pkgEmbed     map[string]string // embed-only error type → removed message field (package scope)
-	changed      bool
-	errBangCount int
+	fset           *token.FileSet
+	file           *ast.File
+	pkgEmbed       map[string]string   // embed-only error type → removed message field (package scope)
+	pkgExtraFields map[string][]string // has-extra error type → domain field names (package scope)
+	changed        bool
+	errBangCount   int
 }
 
 func (m *fileModernizer) simplifyNilReturnsInFunc(fn *ast.FuncDecl) {
@@ -477,7 +479,7 @@ func (m *fileModernizer) propagateReturnErrBody(body *ast.BlockStmt, vt ast.Expr
 			m.errBangCount++
 			continue
 		}
-		if tryStmt, ok := m.matchStandaloneErrBang(stmt, vt); ok {
+		if tryStmt, ok := m.matchStandaloneErrBang(stmt, body.List, i, vt, params); ok {
 			newList = append(newList, tryStmt)
 			bodyChanged = true
 			m.mark()
@@ -491,7 +493,7 @@ func (m *fileModernizer) propagateReturnErrBody(body *ast.BlockStmt, vt ast.Expr
 }
 
 // if err != nil { return err } or if err != nil { return zero, err } → err!
-func (m *fileModernizer) matchStandaloneErrBang(stmt ast.Stmt, vt ast.Expr) (ast.Stmt, bool) {
+func (m *fileModernizer) matchStandaloneErrBang(stmt ast.Stmt, list []ast.Stmt, i int, vt ast.Expr, params []string) (ast.Stmt, bool) {
 	ifStmt, ok := stmt.(*ast.IfStmt)
 	if !ok || ifStmt.Init != nil || ifStmt.Else != nil {
 		return nil, false
@@ -507,13 +509,16 @@ func (m *fileModernizer) matchStandaloneErrBang(stmt ast.Stmt, vt ast.Expr) (ast
 	if !ok {
 		return nil, false
 	}
-	if isReturnErrOnly(ret, errName) {
-		return errBangStmt(errName), true
+	if !isReturnErrOnly(ret, errName) && (vt == nil || !isReturnWithErr(ret, errName)) {
+		return nil, false
 	}
-	if vt != nil && isReturnWithErr(ret, errName) {
-		return errBangStmt(errName), true
+	if errDeclBeforeInStmts(list, i, errName, params) {
+		return nil, false
 	}
-	return nil, false
+	if errUsedInStmts(list, i+1, errName) || errAssignedLater(list, i+1, errName) {
+		return nil, false
+	}
+	return errBangStmt(errName), true
 }
 
 func errBangStmt(errName string) ast.Stmt {
@@ -665,7 +670,7 @@ func (m *fileModernizer) matchIfInitReturnErr(stmt ast.Stmt, list []ast.Stmt, i 
 	if !isReturnErrOnly(ret, errName) && (vt == nil || !isReturnWithErr(ret, errName)) {
 		return nil, false
 	}
-	if errUsedInStmts(list, i+1, errName) {
+	if errUsedInStmts(list, i+1, errName) || errAssignedLater(list, i+1, errName) {
 		return nil, false
 	}
 	return bangStmtFromErrAssign(assign, call, errLHS, list, i, params)
@@ -696,7 +701,7 @@ func (m *fileModernizer) matchAssignErrBang(asg ast.Stmt, list []ast.Stmt, i int
 	if !ok || id.Name != errLHS.Name {
 		return nil, false
 	}
-	if errUsedInStmts(list, i+2, errLHS.Name) {
+	if errUsedInStmts(list, i+2, errLHS.Name) || errAssignedLater(list, i+2, errLHS.Name) {
 		return nil, false
 	}
 	return bangStmtFromErrAssign(assign, call, errLHS, list, i, params)
@@ -781,7 +786,7 @@ func (m *fileModernizer) matchAssignReturnErr(asg ast.Stmt, list []ast.Stmt, i i
 	if !isReturnErrOnly(ret, errName) && (vt == nil || !isReturnWithErr(ret, errName)) {
 		return nil, false
 	}
-	if errUsedInStmts(list, i+2, errName) {
+	if errUsedInStmts(list, i+2, errName) || errAssignedLater(list, i+2, errName) {
 		return nil, false
 	}
 	return bangStmtFromErrAssign(assign, call, errLHS, list, i, params)
@@ -860,12 +865,16 @@ func (m *fileModernizer) modernizeFunc(fn *ast.FuncDecl) {
 		return
 	}
 	if fn.Body != nil {
+		var params []string
+		if fn.Type != nil {
+			params = paramNames(fn.Type)
+		}
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
 			if _, ok := n.(*ast.FuncLit); ok {
 				return false
 			}
 			if b, ok := n.(*ast.BlockStmt); ok {
-				m.modernizeBody(b, vt)
+				m.modernizeBody(b, vt, params)
 			}
 			return true
 		})
@@ -897,25 +906,25 @@ func (m *fileModernizer) modernizeInterface(it *ast.InterfaceType) {
 	}
 }
 
-func (m *fileModernizer) modernizeBody(body *ast.BlockStmt, vt ast.Expr) {
+func (m *fileModernizer) modernizeBody(body *ast.BlockStmt, vt ast.Expr, params []string) {
 	if body == nil {
 		return
 	}
 	var newList []ast.Stmt
 	for i := 0; i < len(body.List); i++ {
 		stmt := body.List[i]
-		if asg, ok := m.matchAssignErrCheck(stmt, body.List, i, vt); ok {
+		if asg, ok := m.matchAssignErrCheck(stmt, body.List, i, vt, params); ok {
 			newList = append(newList, asg)
 			i += 1
 			m.mark()
 			continue
 		}
-		if tryStmt, ok := m.matchIfInitErr(stmt, vt); ok {
+		if tryStmt, ok := m.matchIfInitErr(stmt, body.List, i, vt, params); ok {
 			newList = append(newList, tryStmt)
 			m.mark()
 			continue
 		}
-		if tryStmt, ok := m.matchIfAssignErr(stmt, vt); ok {
+		if tryStmt, ok := m.matchIfAssignErr(stmt, body.List, i, vt, params); ok {
 			newList = append(newList, tryStmt)
 			m.mark()
 			continue
@@ -991,8 +1000,22 @@ func zeroMatches(z, vt ast.Expr) bool {
 	}
 }
 
+func errDeclBeforeInStmts(list []ast.Stmt, before int, name string, params []string) bool {
+	for j := 0; j < before; j++ {
+		if stmtDeclaresIdent(list[j], name) {
+			return true
+		}
+	}
+	for _, p := range params {
+		if p == name {
+			return true
+		}
+	}
+	return false
+}
+
 // if err := call(); err != nil { return zero, err }
-func (m *fileModernizer) matchIfInitErr(stmt ast.Stmt, vt ast.Expr) (ast.Stmt, bool) {
+func (m *fileModernizer) matchIfInitErr(stmt ast.Stmt, list []ast.Stmt, i int, vt ast.Expr, params []string) (ast.Stmt, bool) {
 	ifStmt, ok := stmt.(*ast.IfStmt)
 	if !ok || ifStmt.Else != nil || ifStmt.Init == nil {
 		return nil, false
@@ -1021,6 +1044,9 @@ func (m *fileModernizer) matchIfInitErr(stmt ast.Stmt, vt ast.Expr) (ast.Stmt, b
 		if !ok || !isZeroReturn(ret, vt, errName) {
 			return nil, false
 		}
+		if errUsedInStmts(list, i+1, errName) {
+			return nil, false
+		}
 		return &ast.ExprStmt{X: bangExpr(call)}, true
 	}
 	if len(assign.Lhs) == 2 && len(assign.Rhs) == 1 {
@@ -1044,6 +1070,9 @@ func (m *fileModernizer) matchIfInitErr(stmt ast.Stmt, vt ast.Expr) (ast.Stmt, b
 		if !ok || !isZeroReturn(ret, vt, errName) {
 			return nil, false
 		}
+		if errUsedInStmts(list, i+1, errName) {
+			return nil, false
+		}
 		if isBlank(valLHS) {
 			return &ast.ExprStmt{X: bangExpr(call)}, true
 		}
@@ -1057,7 +1086,7 @@ func (m *fileModernizer) matchIfInitErr(stmt ast.Stmt, vt ast.Expr) (ast.Stmt, b
 }
 
 // if err = call(); err != nil { return zero, err } — error-only call
-func (m *fileModernizer) matchIfAssignErr(stmt ast.Stmt, vt ast.Expr) (ast.Stmt, bool) {
+func (m *fileModernizer) matchIfAssignErr(stmt ast.Stmt, list []ast.Stmt, i int, vt ast.Expr, params []string) (ast.Stmt, bool) {
 	ifStmt, ok := stmt.(*ast.IfStmt)
 	if !ok || ifStmt.Else != nil || ifStmt.Init == nil {
 		return nil, false
@@ -1068,6 +1097,9 @@ func (m *fileModernizer) matchIfAssignErr(stmt ast.Stmt, vt ast.Expr) (ast.Stmt,
 	}
 	errLHS, ok := assign.Lhs[0].(*ast.Ident)
 	if !ok {
+		return nil, false
+	}
+	if errDeclBeforeInStmts(list, i, errLHS.Name, params) {
 		return nil, false
 	}
 	call, ok := assign.Rhs[0].(*ast.CallExpr)
@@ -1088,7 +1120,7 @@ func (m *fileModernizer) matchIfAssignErr(stmt ast.Stmt, vt ast.Expr) (ast.Stmt,
 	return &ast.ExprStmt{X: bangExpr(call)}, true
 }
 
-func (m *fileModernizer) matchAssignErrCheck(asg ast.Stmt, list []ast.Stmt, i int, vt ast.Expr) (ast.Stmt, bool) {
+func (m *fileModernizer) matchAssignErrCheck(asg ast.Stmt, list []ast.Stmt, i int, vt ast.Expr, params []string) (ast.Stmt, bool) {
 	assign, ok := asg.(*ast.AssignStmt)
 	if !ok || assign.Tok != token.DEFINE || len(assign.Lhs) != 2 || len(assign.Rhs) != 1 {
 		return nil, false
@@ -1120,6 +1152,9 @@ func (m *fileModernizer) matchAssignErrCheck(asg ast.Stmt, list []ast.Stmt, i in
 	if !ok || !isZeroReturn(ret, vt, errName) {
 		return nil, false
 	}
+	if errUsedInStmts(list, i+2, errName) || errAssignedLater(list, i+2, errName) {
+		return nil, false
+	}
 	if isBlank(valLHS) {
 		return &ast.ExprStmt{X: bangExpr(call)}, true
 	}
@@ -1128,6 +1163,41 @@ func (m *fileModernizer) matchAssignErrCheck(asg ast.Stmt, list []ast.Stmt, i in
 		Lhs: []ast.Expr{astutilClone(valLHS)},
 		Rhs: []ast.Expr{bangExpr(call)},
 	}, true
+}
+
+func errAssignedLater(list []ast.Stmt, start int, errName string) bool {
+	for j := start; j < len(list); j++ {
+		if stmtAssignsToIdent(list[j], errName) {
+			return true
+		}
+	}
+	return false
+}
+
+func stmtAssignsToIdent(stmt ast.Stmt, name string) bool {
+	found := false
+	ast.Inspect(stmt, func(n ast.Node) bool {
+		var assign *ast.AssignStmt
+		switch node := n.(type) {
+		case *ast.AssignStmt:
+			assign = node
+		case *ast.IfStmt:
+			if node.Init != nil {
+				assign, _ = node.Init.(*ast.AssignStmt)
+			}
+		}
+		if assign == nil {
+			return true
+		}
+		for _, lhs := range assign.Lhs {
+			if id, ok := lhs.(*ast.Ident); ok && id.Name == name {
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+	return found
 }
 
 func isBlank(e ast.Expr) bool {

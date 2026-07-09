@@ -151,7 +151,7 @@ type Saver interface {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, changed, err := modernizeParsedFile(fset, f, filepath.Join(t.TempDir(), "p.go"), false, nil)
+	_, _, changed, err := modernizeParsedFile(fset, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,5 +241,139 @@ func makeErr() error {
 	}
 	if !strings.Contains(out, `errors.NewCustom[AppError]("x")`) {
 		t.Fatalf("missing NewCustom in assign:\n%s", out)
+	}
+}
+
+func TestModernizePositionalHasExtraComposite(t *testing.T) {
+	const src = `package p
+
+type ErrInvalidARN struct {
+	ARN string
+}
+
+func (e ErrInvalidARN) Error() string {
+	return e.ARN
+}
+
+func parse(s string) error {
+	return &ErrInvalidARN{s}
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkgExtra := collectPackageHasExtraErrorTypes([]*ast.File{f})
+	mod := &fileModernizer{fset: fset, file: f, pkgExtraFields: pkgExtra}
+	_, custom := mod.modernizeStructuredErrors()
+	if custom < 2 {
+		t.Fatalf("expected custom error rewrites, got %d", custom)
+	}
+	out := formatTestFile(fset, f)
+	if strings.Contains(out, "&ErrInvalidARN{s}") {
+		t.Fatalf("positional composite should be keyed:\n%s", out)
+	}
+	if !strings.Contains(out, "ARN: s") {
+		t.Fatalf("missing keyed field:\n%s", out)
+	}
+}
+
+func TestModernizePruneUnusedFmtImport(t *testing.T) {
+	const src = `package p
+
+import "fmt"
+
+func f() error {
+	return fmt.Errorf("oops")
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mod := &fileModernizer{fset: fset, file: f}
+	mod.modernizeStructuredErrors()
+	out := formatTestFile(fset, f)
+	if strings.Contains(out, `"fmt"`) {
+		t.Fatalf("fmt import should be removed:\n%s", out)
+	}
+}
+
+func TestModernizeSkipErrBangWhenErrReused(t *testing.T) {
+	const src = `package p
+
+import "os"
+
+func lockedOpen() (*os.File, error) {
+	f, err := os.Open("x")
+	if err != nil {
+		return nil, err
+	}
+	if err = f.Sync(); err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, changed, err := modernizeParsedFile(fset, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected signature conversion")
+	}
+	out := formatTestFile(fset, f)
+	if strings.Contains(out, `os.Open("x")!`) {
+		t.Fatalf("should not bang Open when err is reused:\n%s", out)
+	}
+	if !strings.Contains(out, "f, err := os.Open") {
+		t.Fatalf("expected to keep err binding:\n%s", out)
+	}
+}
+
+func TestModernizeSkipStandaloneErrBangWhenErrReused(t *testing.T) {
+	const src = `package p
+
+import (
+	"os"
+	"syscall"
+)
+
+func lockedOpen(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, syscall.O_RDONLY, 0)
+	if err != nil {
+		return nil, err
+	}
+	if err = f.Sync(); err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, changed, err := modernizeParsedFile(fset, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected signature conversion")
+	}
+	out := formatTestFile(fset, f)
+	if strings.Contains(out, "err!") {
+		t.Fatalf("should not emit standalone err! when err is reused:\n%s", out)
+	}
+	if !strings.Contains(out, "f, err := os.OpenFile") {
+		t.Fatalf("expected to keep err binding:\n%s", out)
 	}
 }
