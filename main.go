@@ -118,9 +118,10 @@ func modernizePackage(pkg pkgFiles) (changedFiles int, counts rewriteCounts, err
 	// Pointer annotations (*T vs *T?) are opt-in per-site; automatic inference is
 	// still too aggressive for large codebases like minio.
 	nilableChanged := make([]bool, len(files))
+	pkgEmbed := collectPackageEmbedOnlyTypes(files)
 
 	for i, path := range pkg.paths {
-		_, countsPart, fileChanged, e := modernizeParsedFile(fset, files[i], path, nilableChanged[i])
+		_, countsPart, fileChanged, e := modernizeParsedFile(fset, files[i], path, nilableChanged[i], pkgEmbed)
 		if e != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", path, e)
 			continue
@@ -139,8 +140,21 @@ func modernizePackage(pkg pkgFiles) (changedFiles int, counts rewriteCounts, err
 	return changedFiles, counts, nil
 }
 
-func modernizeParsedFile(fset *token.FileSet, f *ast.File, path string, forceWrite bool) (nilableChanged bool, counts rewriteCounts, changed bool, err error) {
-	mod := &fileModernizer{fset: fset, file: f}
+func modernizeParsedFile(fset *token.FileSet, f *ast.File, path string, forceWrite bool, pkgEmbed map[string]string) (nilableChanged bool, counts rewriteCounts, changed bool, err error) {
+	mod := &fileModernizer{fset: fset, file: f, pkgEmbed: pkgEmbed}
+
+	// (T, error) → T! signatures and try/bang patterns inside newly converted bodies.
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.FuncDecl:
+			mod.modernizeFunc(n)
+		case *ast.InterfaceType:
+			mod.modernizeInterface(n)
+		}
+		return true
+	})
+
+	// err! propagation and cleanup (works on T! and error-returning functions).
 	ast.Inspect(f, func(n ast.Node) bool {
 		if fn, ok := n.(*ast.FuncDecl); ok {
 			mod.simplifyNilReturnsInFunc(fn)
@@ -170,13 +184,14 @@ func modernizeFile(path string) (bool, int, error) {
 		return false, 0, err
 	}
 	f.NilablePointersRegions = buildNilablePointersRegions(collectNilablePointersDirectives(f))
-	_, countsPart, changed, err := modernizeParsedFile(fset, f, path, applyPtrAnnotations(fset, []*ast.File{f})[0])
+	_, countsPart, changed, err := modernizeParsedFile(fset, f, path, applyPtrAnnotations(fset, []*ast.File{f})[0], nil)
 	return changed, countsPart.errBang, err
 }
 
 type fileModernizer struct {
 	fset         *token.FileSet
 	file         *ast.File
+	pkgEmbed     map[string]string // embed-only error type → removed message field (package scope)
 	changed      bool
 	errBangCount int
 }

@@ -41,6 +41,9 @@ func (m *fileModernizer) modernizeStructuredErrors() (fmtErrorf, customErrors in
 		return fmtErrorf, 0
 	}
 	customErrors = em.rewriteCustomErrorTypes()
+	if len(em.pkgEmbed) > 0 {
+		customErrors += em.rewriteRemovedMessageFieldRefs()
+	}
 	customErrors += em.rewriteCustomErrorUsages()
 	fmtErrorf = em.rewriteFmtErrorfCalls()
 	return fmtErrorf, customErrors
@@ -406,13 +409,186 @@ func firstTypeParamName(fn *ast.FuncDecl) string {
 	return ""
 }
 
+func collectPackageEmbedOnlyTypes(files []*ast.File) map[string]string {
+	out := map[string]string{}
+	for _, f := range files {
+		em := &errorsModernizer{
+			fileModernizer: &fileModernizer{file: f},
+			types:          map[string]*customErrorType{},
+		}
+		em.collectCustomErrorTypes()
+		for name, info := range em.types {
+			if info.embedOnly {
+				out[name] = info.messageField
+			}
+		}
+	}
+	return out
+}
+
+func rewriteSelectorToBaseMessage(sel *ast.SelectorExpr) {
+	oldX := sel.X
+	sel.X = &ast.SelectorExpr{
+		X:   oldX,
+		Sel: &ast.Ident{Name: "Base"},
+	}
+	sel.Sel = &ast.Ident{Name: "Message"}
+}
+
+func (em *errorsModernizer) rewriteRemovedMessageFieldRefs() int {
+	count := 0
+	for typeName, msgField := range em.pkgEmbed {
+		for _, decl := range em.file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			locals := em.embedOnlyTypeIdents(fn, typeName)
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				switch node := n.(type) {
+				case *ast.AssignStmt:
+					if node.Tok == token.DEFINE || node.Tok == token.ASSIGN {
+						for i, rhs := range node.Rhs {
+							if i >= len(node.Lhs) {
+								break
+							}
+							id, ok := node.Lhs[i].(*ast.Ident)
+							if !ok {
+								continue
+							}
+							if em.exprIsEmbedOnlyType(rhs, typeName) {
+								locals[id.Name] = true
+							}
+						}
+					}
+				case *ast.SelectorExpr:
+					if node.Sel.Name != msgField {
+						return true
+					}
+					id, ok := node.X.(*ast.Ident)
+					if !ok || !locals[id.Name] {
+						return true
+					}
+					rewriteSelectorToBaseMessage(node)
+					em.mark()
+					count++
+				}
+				return true
+			})
+		}
+	}
+	return count
+}
+
+func fieldTypeMatches(t ast.Expr, typeName string) bool {
+	t = ast.Unparen(t)
+	switch rt := t.(type) {
+	case *ast.Ident:
+		return rt.Name == typeName
+	case *ast.StarExpr:
+		return fieldTypeMatches(rt.X, typeName)
+	}
+	return false
+}
+
+func (em *errorsModernizer) embedOnlyTypeIdents(fn *ast.FuncDecl, typeName string) map[string]bool {
+	out := map[string]bool{}
+	if fn.Recv != nil && len(fn.Recv.List) > 0 {
+		recv := fn.Recv.List[0]
+		if recvMatchesType(recv.Type, typeName) {
+			for _, name := range recv.Names {
+				out[name.Name] = true
+			}
+			if len(recv.Names) == 0 {
+				out["_"] = true // unnamed receiver rare; skip
+			}
+		}
+	}
+	if fn.Type != nil && fn.Type.Params != nil {
+		for _, field := range fn.Type.Params.List {
+			if !fieldTypeMatches(field.Type, typeName) {
+				continue
+			}
+			for _, name := range field.Names {
+				out[name.Name] = true
+			}
+		}
+	}
+	return out
+}
+
+func (em *errorsModernizer) exprIsEmbedOnlyType(e ast.Expr, typeName string) bool {
+	e = ast.Unparen(e)
+	switch x := e.(type) {
+	case *ast.CompositeLit:
+		if id, ok := x.Type.(*ast.Ident); ok {
+			return id.Name == typeName
+		}
+	case *ast.CallExpr:
+		switch fun := x.Fun.(type) {
+		case *ast.IndexExpr:
+			return indexExprNamesType(fun, typeName, "NewCustom")
+		case *ast.IndexListExpr:
+			return indexExprNamesType(fun, typeName, "NewCustom")
+		}
+	}
+	return false
+}
+
+func indexExprNamesType(fun ast.Expr, typeName, method string) bool {
+	var idx ast.Expr
+	switch fe := fun.(type) {
+	case *ast.IndexExpr:
+		idx = fe.Index
+		fun = fe.X
+	case *ast.IndexListExpr:
+		if len(fe.Indices) == 0 {
+			return false
+		}
+		idx = fe.Indices[0]
+		fun = fe.X
+	default:
+		return false
+	}
+	sel, ok := fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	id, ok := sel.X.(*ast.Ident)
+	if !ok || id.Name != "errors" || sel.Sel.Name != method {
+		return false
+	}
+	tid, ok := idx.(*ast.Ident)
+	return ok && tid.Name == typeName
+}
+
 func (em *errorsModernizer) rewriteCustomErrorUsages() int {
 	count := 0
 	ast.Inspect(em.file, func(n ast.Node) bool {
 		switch node := n.(type) {
+		case *ast.AssignStmt:
+			if c := em.rewriteAssignComposite(node); c > 0 {
+				count += c
+			}
 		case *ast.ReturnStmt:
 			if c := em.rewriteReturnCompositeLit(node); c > 0 {
 				count += c
+			}
+		case *ast.GenDecl:
+			if node.Tok == token.VAR {
+				for _, spec := range node.Specs {
+					vs, ok := spec.(*ast.ValueSpec)
+					if !ok {
+						continue
+					}
+					for i, v := range vs.Values {
+						if newExpr, ok := em.embedOnlyCompositeToNewCustom(v); ok {
+							vs.Values[i] = newExpr
+							em.mark()
+							count++
+						}
+					}
+				}
 			}
 		}
 		return true
@@ -421,50 +597,59 @@ func (em *errorsModernizer) rewriteCustomErrorUsages() int {
 	return count
 }
 
-func (em *errorsModernizer) rewriteReturnCompositeLit(ret *ast.ReturnStmt) int {
+func (em *errorsModernizer) rewriteAssignComposite(assign *ast.AssignStmt) int {
 	count := 0
-	for i, r := range ret.Results {
-		cl, ok := r.(*ast.CompositeLit)
-		if !ok {
-			if unary, ok := r.(*ast.UnaryExpr); ok && unary.Op == token.AND {
-				if cl, ok = unary.X.(*ast.CompositeLit); ok {
-					if c := em.rewriteReturnPtrCompositeLit(ret, i, cl); c > 0 {
-						count += c
-					}
-					continue
-				}
-			}
-			continue
-		}
-		typeName, info := em.compositeLitType(cl)
-		if info == nil {
-			continue
-		}
-		if info.embedOnly {
-			if newExpr := em.newCustomExpr(typeName, info, cl); newExpr != nil {
-				ret.Results[i] = newExpr
-				em.mark()
-				count++
-			}
-		} else if info.hasExtra {
-			// Cannot rewrite inline composite return with extra fields safely here.
+	for i, rhs := range assign.Rhs {
+		if newExpr, ok := em.embedOnlyCompositeToNewCustom(rhs); ok {
+			assign.Rhs[i] = newExpr
+			em.mark()
+			count++
 		}
 	}
 	return count
 }
 
-func (em *errorsModernizer) rewriteReturnPtrCompositeLit(ret *ast.ReturnStmt, idx int, cl *ast.CompositeLit) int {
-	typeName, info := em.compositeLitType(cl)
-	if info == nil || !info.embedOnly {
-		return 0
+func (em *errorsModernizer) embedOnlyCompositeToNewCustom(e ast.Expr) (ast.Expr, bool) {
+	switch x := ast.Unparen(e).(type) {
+	case *ast.CompositeLit:
+		typeName, info := em.compositeLitType(x)
+		if info == nil || !info.embedOnly {
+			return nil, false
+		}
+		newExpr := em.newCustomExpr(typeName, info, x)
+		return newExpr, newExpr != nil
+	case *ast.UnaryExpr:
+		if x.Op != token.AND {
+			return nil, false
+		}
+		cl, ok := x.X.(*ast.CompositeLit)
+		if !ok {
+			return nil, false
+		}
+		typeName, info := em.compositeLitType(cl)
+		if info == nil || !info.embedOnly {
+			return nil, false
+		}
+		newExpr := em.newCustomExpr(typeName, info, cl)
+		if newExpr == nil {
+			return nil, false
+		}
+		return newExpr, true
+	default:
+		return nil, false
 	}
-	newExpr := em.newCustomExpr(typeName, info, cl)
-	if newExpr == nil {
-		return 0
+}
+
+func (em *errorsModernizer) rewriteReturnCompositeLit(ret *ast.ReturnStmt) int {
+	count := 0
+	for i, r := range ret.Results {
+		if newExpr, ok := em.embedOnlyCompositeToNewCustom(r); ok {
+			ret.Results[i] = newExpr
+			em.mark()
+			count++
+		}
 	}
-	ret.Results[idx] = newExpr
-	em.mark()
-	return 1
+	return count
 }
 
 func (em *errorsModernizer) compositeLitType(cl *ast.CompositeLit) (string, *customErrorType) {

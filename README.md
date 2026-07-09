@@ -4,6 +4,8 @@ A source rewriter for [Bow](https://github.com/Bow5/Bow) that migrates code to f
 
 It walks a module or directory of Go files and rewrites them in place. Files are processed per package so nilable-pointer inference can use call sites within the package.
 
+See **[docs/examples.md](docs/examples.md)** for a full before/after catalog, including what reference rewrites are *not* performed.
+
 ## What it changes
 
 ### Nilable pointers
