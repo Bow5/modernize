@@ -1,6 +1,6 @@
 # modernize
 
-A source rewriter for [Better](https://github.com/Better14/Better) that migrates code to fork syntax: `T!` result types, `expr!` error propagation, and nilable pointer types (`*T` / `*T?`).
+A source rewriter for [Bow](https://github.com/Bow5/Bow) that migrates code to fork syntax: `T!` result types, `expr!` error propagation, and nilable pointer types (`*T` / `*T?`).
 
 It walks a module or directory of Go files and rewrites them in place. Files are processed per package so nilable-pointer inference can use call sites within the package.
 
@@ -69,7 +69,7 @@ Skips `vendor/`, `.git/`, `testdata/`, and `_test.go` files.
 
 ## Requirements
 
-Build and run with **Better** as `GOROOT` — the output uses `T!`, `expr!`, and `*T?`, which standard Go does not accept.
+Build and run with **Bow** as `GOROOT` — the output uses `T!`, `expr!`, and `*T?`, which standard Go does not accept.
 
 ## Usage
 
