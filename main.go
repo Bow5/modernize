@@ -412,7 +412,7 @@ func blockDeclaresErr(body *ast.BlockStmt, name string) bool {
 }
 
 func (m *fileModernizer) propagateReturnErrInFunc(fn *ast.FuncDecl) {
-	if fn.Type == nil || fn.Body == nil || !canPropagateWithBang(fn.Type) {
+	if fn.Type == nil || fn.Body == nil || !hasResultTypeBang(fn.Type) {
 		return
 	}
 	var vt ast.Expr
