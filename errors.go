@@ -872,7 +872,7 @@ func (em *errorsModernizer) rewriteConstructorReturns() int {
 	count := 0
 	for _, decl := range em.file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Body == nil {
+		if !ok || fn.Body == nil || !isConstructorFunc(fn) {
 			continue
 		}
 		var newList []ast.Stmt
@@ -944,6 +944,14 @@ func (em *errorsModernizer) wrapConstructorReturn(ret *ast.ReturnStmt) ([]ast.St
 	retStmt := &ast.ReturnStmt{Results: []ast.Expr{&ast.Ident{Name: tmpName}}}
 	em.ensureImport("errors")
 	return []ast.Stmt{init, initCustom, retStmt}, true
+}
+
+func isConstructorFunc(fn *ast.FuncDecl) bool {
+	if fn.Name == nil {
+		return false
+	}
+	name := fn.Name.Name
+	return strings.HasPrefix(name, "new") || strings.HasPrefix(name, "New")
 }
 
 func astutilCloneComposite(cl *ast.CompositeLit) *ast.CompositeLit {

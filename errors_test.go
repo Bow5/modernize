@@ -338,6 +338,44 @@ func lockedOpen() (*os.File, error) {
 	}
 }
 
+func TestModernizeSkipInitCustomOnNonConstructor(t *testing.T) {
+	const src = `package p
+
+type Err struct {
+	msg    string
+	detail string
+}
+
+func (e Err) Error() string {
+	if e.detail != "" {
+		return e.detail
+	}
+	return e.msg
+}
+
+func ErrorToErr(err error) Err {
+	return Err{msg: err.Error()}
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mod := &fileModernizer{fset: fset, file: f}
+	_, custom := mod.modernizeStructuredErrors()
+	if custom < 1 {
+		t.Fatalf("expected Base embed, got %d", custom)
+	}
+	out := formatTestFile(fset, f)
+	if strings.Contains(out, "InitCustom") {
+		t.Fatalf("should not InitCustom non-constructor returns:\n%s", out)
+	}
+	if !strings.Contains(out, "return Err{msg: err.Error()}") {
+		t.Fatalf("expected plain return:\n%s", out)
+	}
+}
+
 func TestModernizeSkipStandaloneErrBangWhenErrReused(t *testing.T) {
 	const src = `package p
 
