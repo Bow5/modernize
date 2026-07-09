@@ -115,9 +115,7 @@ func modernizePackage(pkg pkgFiles) (changedFiles int, counts rewriteCounts, err
 		files[i] = f
 	}
 
-	// Pointer annotations (*T vs *T?) are opt-in per-site; automatic inference is
-	// still too aggressive for large codebases like minio.
-	nilableChanged := make([]bool, len(files))
+	nilableChanged := applyPtrAnnotations(fset, files)
 	pkgEmbed := collectPackageEmbedOnlyTypes(files)
 	pkgExtraFields := collectPackageHasExtraErrorTypes(files)
 

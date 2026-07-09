@@ -20,20 +20,24 @@ type typedField struct {
 }
 
 type ptrAnnotator struct {
-	fset      *token.FileSet
-	files     []*ast.File
-	nilable   map[ptrSiteKey]bool
-	typeNode  map[ptrSiteKey]ast.Expr
-	funcs     map[string][]*ast.FuncDecl
+	fset          *token.FileSet
+	files         []*ast.File
+	nilable       map[ptrSiteKey]bool
+	strictResult  map[ptrSiteKey]bool
+	lookupResult  map[ptrSiteKey]bool
+	typeNode      map[ptrSiteKey]ast.Expr
+	funcs         map[string][]*ast.FuncDecl
 }
 
 func newPtrAnnotator(fset *token.FileSet, files []*ast.File) *ptrAnnotator {
 	return &ptrAnnotator{
-		fset:     fset,
-		files:    files,
-		nilable:  make(map[ptrSiteKey]bool),
-		typeNode: make(map[ptrSiteKey]ast.Expr),
-		funcs:    make(map[string][]*ast.FuncDecl),
+		fset:         fset,
+		files:        files,
+		nilable:      make(map[ptrSiteKey]bool),
+		strictResult: make(map[ptrSiteKey]bool),
+		lookupResult: make(map[ptrSiteKey]bool),
+		typeNode:     make(map[ptrSiteKey]ast.Expr),
+		funcs:        make(map[string][]*ast.FuncDecl),
 	}
 }
 
@@ -42,6 +46,65 @@ func (a *ptrAnnotator) analyze() {
 	for _, f := range a.files {
 		a.scanNilEvidence(f)
 	}
+	a.markLookupResults()
+	a.finalizeNilableResults()
+}
+
+func boolPairResults(fields *ast.FieldList) bool {
+	if fields == nil || len(fields.List) != 2 {
+		return false
+	}
+	second := fields.List[1].Type
+	id, ok := ast.Unparen(second).(*ast.Ident)
+	return ok && id.Name == "bool"
+}
+
+func (a *ptrAnnotator) markLookupResults() {
+	for _, f := range a.files {
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || !a.isLookupResult(fn) || fn.Type == nil || fn.Type.Results == nil || boolPairResults(fn.Type.Results) {
+				continue
+			}
+			flat := flattenFields("result", fn.Name.Name, fn.Type.Results)
+			for _, tf := range flat {
+				if plainStarType(tf.typ) != nil {
+					a.nilable[tf.key] = true
+					a.lookupResult[tf.key] = true
+				}
+			}
+		}
+	}
+}
+
+func (a *ptrAnnotator) finalizeNilableResults() {
+	for key := range a.strictResult {
+		if a.lookupResult[key] {
+			continue
+		}
+		delete(a.nilable, key)
+	}
+}
+
+func (a *ptrAnnotator) isPackageFunc(fn *ast.FuncDecl) bool {
+	return fn != nil && fn.Recv == nil
+}
+
+func (a *ptrAnnotator) isLookupResult(fn *ast.FuncDecl) bool {
+	if fn == nil || fn.Name == nil {
+		return false
+	}
+	name := strings.ToLower(fn.Name.Name)
+	switch name {
+	case "root", "sizerecursive", "totalchildrenrec":
+		return false
+	}
+	for _, hint := range []string{"find", "search", "lookup", "parent"} {
+		if strings.Contains(name, hint) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *ptrAnnotator) collectSites() {
@@ -266,27 +329,53 @@ func (a *ptrAnnotator) scanReturn(ret *ast.ReturnStmt, fn *ast.FuncDecl) {
 	if fn == nil || fn.Type == nil || fn.Type.Results == nil {
 		return
 	}
+	if boolPairResults(fn.Type.Results) {
+		return
+	}
 	flat := flattenFields("result", fn.Name.Name, fn.Type.Results)
+	lookup := a.isLookupResult(fn)
 	for i, expr := range ret.Results {
-		if !isNilExpr(expr) || i >= len(flat) {
+		if i >= len(flat) || plainStarType(flat[i].typ) == nil {
+			continue
+		}
+		if lookup {
+			a.lookupResult[flat[i].key] = true
+		}
+		if !isNilExpr(expr) {
+			a.strictResult[flat[i].key] = true
 			continue
 		}
 		if len(ret.Results) == 1 {
+			a.nilable[flat[i].key] = true
 			continue
 		}
 		// return nil, ... in multi-value returns is almost always an error path zero value.
 		if i == 0 && isNilExpr(expr) {
 			continue
 		}
-		if plainStarType(flat[i].typ) != nil {
-			a.nilable[flat[i].key] = true
-		}
+		a.nilable[flat[i].key] = true
 	}
 }
 
 func (a *ptrAnnotator) scanCall(call *ast.CallExpr) {
-	// Do not infer nilable pointer parameters from nil arguments at call sites.
-	// Output parameters are often passed as nil and written before use.
+	fnName, _, _ := callTarget(call.Fun)
+	if fnName == "" {
+		return
+	}
+	for _, fn := range a.funcs[fnName] {
+		if fn.Type == nil || fn.Type.Params == nil {
+			continue
+		}
+		flat := flattenFields("param", fn.Name.Name, fn.Type.Params)
+		for i, arg := range call.Args {
+			if !isNilExpr(arg) || i >= len(flat) {
+				continue
+			}
+			if plainStarType(flat[i].typ) != nil {
+				a.nilable[flat[i].key] = true
+			}
+		}
+	}
 }
 
 func flattenFields(kind, owner string, fields *ast.FieldList) []typedField {
@@ -334,24 +423,8 @@ func callTarget(fun ast.Expr) (name, recv string, isMethod bool) {
 }
 
 func (a *ptrAnnotator) scanCompositeLit(lit *ast.CompositeLit) {
-	typeName := compositeLitTypeName(lit)
-	if typeName == "" {
-		return
-	}
-	for _, elt := range lit.Elts {
-		kv, ok := elt.(*ast.KeyValueExpr)
-		if !ok || !isNilExpr(kv.Value) {
-			continue
-		}
-		switch key := kv.Key.(type) {
-		case *ast.Ident:
-			a.nilable[ptrSiteKey{kind: "field", owner: typeName, name: key.Name, index: -1}] = true
-		case *ast.SelectorExpr:
-			if _, field, ok := selectorField(key); ok {
-				a.nilable[ptrSiteKey{kind: "field", owner: typeName, name: field, index: -1}] = true
-			}
-		}
-	}
+	// Struct fields set to nil in composite literals are often optional
+	// sentinels; do not infer *T? on the field type from those alone.
 }
 
 func compositeLitTypeName(lit *ast.CompositeLit) string {
@@ -390,6 +463,18 @@ func applyPtrAnnotations(fset *token.FileSet, files []*ast.File) []bool {
 	for i, f := range files {
 		fileChanged := false
 		if rewriteFilePointerTypes(fset, f, ann) {
+			fileChanged = true
+		}
+		if fixNilReturnsForStrictPointerResults(f, ann) {
+			fileChanged = true
+		}
+		if fixNilReceiverReturnsInMethods(f, ann) {
+			fileChanged = true
+		}
+		if splitNilOrReturnGuards(f, ann) {
+			fileChanged = true
+		}
+		if fixFindPassthroughReturns(f, ann) {
 			fileChanged = true
 		}
 		if syncMethodReturnsForNilableFields(fset, f, ann) {
@@ -782,6 +867,257 @@ func collectNilablePointersDirectives(file *ast.File) []nilablePointersDirective
 	}
 	sort.Slice(dirs, func(i, j int) bool { return dirs[i].pos < dirs[j].pos })
 	return dirs
+}
+
+func fixNilReturnsForStrictPointerResults(f *ast.File, ann *ptrAnnotator) bool {
+	changed := false
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Type == nil || fn.Type.Results == nil || fn.Body == nil {
+			continue
+		}
+		flat := flattenFields("result", fn.Name.Name, fn.Type.Results)
+		if len(flat) != 1 || plainStarType(flat[0].typ) == nil {
+			continue
+		}
+		if ann.nilable[flat[0].key] {
+			continue
+		}
+		fixNilReturnsInBlock(fn.Body, flat[0].typ, &changed)
+	}
+	return changed
+}
+
+func fixNilReturnsInBlock(body *ast.BlockStmt, typ ast.Expr, changed *bool) {
+	if body == nil {
+		return
+	}
+	for _, st := range body.List {
+		switch s := st.(type) {
+		case *ast.ReturnStmt:
+			if len(s.Results) == 1 && isNilExpr(s.Results[0]) {
+				s.Results[0] = zeroPointerExpr(typ)
+				*changed = true
+			}
+		case *ast.BlockStmt:
+			fixNilReturnsInBlock(s, typ, changed)
+		case *ast.IfStmt:
+			if s.Body != nil {
+				fixNilReturnsInBlock(s.Body, typ, changed)
+			}
+			if elseBlk, ok := s.Else.(*ast.BlockStmt); ok {
+				fixNilReturnsInBlock(elseBlk, typ, changed)
+			} else if elseIf, ok := s.Else.(*ast.IfStmt); ok && elseIf.Body != nil {
+				fixNilReturnsInBlock(elseIf.Body, typ, changed)
+			}
+		case *ast.ForStmt:
+			if s.Body != nil {
+				fixNilReturnsInBlock(s.Body, typ, changed)
+			}
+		case *ast.RangeStmt:
+			if s.Body != nil {
+				fixNilReturnsInBlock(s.Body, typ, changed)
+			}
+		case *ast.SwitchStmt:
+			if s.Body != nil {
+				for _, cc := range s.Body.List {
+					if clause, ok := cc.(*ast.CaseClause); ok {
+						fixNilReturnsInBlock(&ast.BlockStmt{List: clause.Body}, typ, changed)
+					}
+				}
+			}
+		case *ast.TypeSwitchStmt:
+			if s.Body != nil {
+				for _, cc := range s.Body.List {
+					if clause, ok := cc.(*ast.CaseClause); ok {
+						fixNilReturnsInBlock(&ast.BlockStmt{List: clause.Body}, typ, changed)
+					}
+				}
+			}
+		}
+	}
+}
+
+func zeroPointerExpr(typ ast.Expr) ast.Expr {
+	star := plainStarType(typ)
+	if star == nil {
+		return &ast.Ident{Name: "nil"}
+	}
+	return &ast.CallExpr{Fun: &ast.Ident{Name: "new"}, Args: []ast.Expr{star.X}}
+}
+
+func fixNilReceiverReturnsInMethods(f *ast.File, ann *ptrAnnotator) bool {
+	changed := false
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || ann.isPackageFunc(fn) || fn.Recv == nil || fn.Type == nil || fn.Type.Results == nil || fn.Body == nil {
+			continue
+		}
+		flat := flattenFields("result", fn.Name.Name, fn.Type.Results)
+		if len(flat) != 1 || plainStarType(flat[0].typ) == nil || ann.nilable[flat[0].key] {
+			continue
+		}
+		recvName := fn.Recv.List[0].Names[0].Name
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			ifs, ok := n.(*ast.IfStmt)
+			if !ok || ifs.Init != nil || ifs.Else != nil {
+				return true
+			}
+			cond, ok := ifs.Cond.(*ast.BinaryExpr)
+			if !ok || cond.Op != token.EQL {
+				return true
+			}
+			id, ok := cond.X.(*ast.Ident)
+			if !ok || id.Name != recvName || !isNilExpr(cond.Y) {
+				return true
+			}
+			if len(ifs.Body.List) != 1 {
+				return true
+			}
+			ret, ok := ifs.Body.List[0].(*ast.ReturnStmt)
+			if !ok || len(ret.Results) != 1 || !isNilExpr(ret.Results[0]) {
+				return true
+			}
+			ret.Results[0] = &ast.CallExpr{
+				Fun:  &ast.Ident{Name: "panic"},
+				Args: []ast.Expr{&ast.BasicLit{Kind: token.STRING, Value: `"nil receiver"`}},
+			}
+			changed = true
+			return true
+		})
+	}
+	return changed
+}
+
+func splitNilOrReturnGuards(f *ast.File, ann *ptrAnnotator) bool {
+	changed := false
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Type == nil || fn.Type.Results == nil || fn.Body == nil {
+			continue
+		}
+		flat := flattenFields("result", fn.Name.Name, fn.Type.Results)
+		if len(flat) != 1 || plainStarType(flat[0].typ) == nil || ann.nilable[flat[0].key] {
+			continue
+		}
+		if splitNilOrReturnInBlock(fn.Body, flat[0].typ, &changed) {
+			changed = true
+		}
+	}
+	return changed
+}
+
+func splitNilOrReturnInBlock(body *ast.BlockStmt, resTyp ast.Expr, changed *bool) bool {
+	if body == nil {
+		return false
+	}
+	local := false
+	for i := 0; i < len(body.List); i++ {
+		ifs, ok := body.List[i].(*ast.IfStmt)
+		if !ok || ifs.Init != nil || ifs.Else != nil {
+			continue
+		}
+		op, ok := ast.Unparen(ifs.Cond).(*ast.BinaryExpr)
+		if !ok || op.Op != token.LOR {
+			continue
+		}
+		varName, ok := nilGuardVarName(op.X)
+		if !ok {
+			continue
+		}
+		ret, ok := lastReturn(ifs.Body)
+		if !ok || len(ret.Results) != 1 {
+			continue
+		}
+		id, ok := ast.Unparen(ret.Results[0]).(*ast.Ident)
+		if !ok || id.Name != varName {
+			continue
+		}
+		nilIf := &ast.IfStmt{
+			Cond: &ast.BinaryExpr{X: &ast.Ident{Name: varName}, Op: token.EQL, Y: &ast.Ident{Name: "nil"}},
+			Body: &ast.BlockStmt{List: []ast.Stmt{&ast.ReturnStmt{Results: []ast.Expr{zeroPointerExpr(resTyp)}}}},
+		}
+		ifs.Cond = op.Y
+		body.List[i] = nilIf
+		body.List = append(body.List[:i+1], append([]ast.Stmt{ifs}, body.List[i+1:]...)...)
+		local = true
+		*changed = true
+		i++
+	}
+	return local
+}
+
+func nilGuardVarName(cond ast.Expr) (string, bool) {
+	op, ok := ast.Unparen(cond).(*ast.BinaryExpr)
+	if !ok || op.Op != token.EQL {
+		return "", false
+	}
+	if isNilExpr(op.Y) {
+		if id, ok := ast.Unparen(op.X).(*ast.Ident); ok {
+			return id.Name, true
+		}
+	}
+	if isNilExpr(op.X) {
+		if id, ok := ast.Unparen(op.Y).(*ast.Ident); ok {
+			return id.Name, true
+		}
+	}
+	return "", false
+}
+
+func lastReturn(body *ast.BlockStmt) (*ast.ReturnStmt, bool) {
+	if body == nil {
+		return nil, false
+	}
+	for i := len(body.List) - 1; i >= 0; i-- {
+		if ret, ok := body.List[i].(*ast.ReturnStmt); ok {
+			return ret, true
+		}
+	}
+	return nil, false
+}
+
+func fixFindPassthroughReturns(f *ast.File, ann *ptrAnnotator) bool {
+	changed := false
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Type == nil || fn.Type.Results == nil || fn.Body == nil || boolPairResults(fn.Type.Results) {
+			continue
+		}
+		flat := flattenFields("result", fn.Name.Name, fn.Type.Results)
+		if len(flat) != 1 || plainStarType(flat[0].typ) == nil || ann.nilable[flat[0].key] {
+			continue
+		}
+		for i, st := range fn.Body.List {
+			ret, ok := st.(*ast.ReturnStmt)
+			if !ok || len(ret.Results) != 1 {
+				continue
+			}
+			call, ok := ast.Unparen(ret.Results[0]).(*ast.CallExpr)
+			if !ok {
+				continue
+			}
+			name, _, _ := callTarget(call.Fun)
+			if !strings.Contains(strings.ToLower(name), "find") {
+				continue
+			}
+			fn.Body.List[i] = &ast.AssignStmt{
+				Tok: token.DEFINE,
+				Lhs: []ast.Expr{&ast.Ident{Name: "_r"}},
+				Rhs: []ast.Expr{call},
+			}
+			fn.Body.List = append(fn.Body.List[:i+1], append([]ast.Stmt{
+				&ast.IfStmt{
+					Cond: &ast.BinaryExpr{X: &ast.Ident{Name: "_r"}, Op: token.NEQ, Y: &ast.Ident{Name: "nil"}},
+					Body: &ast.BlockStmt{List: []ast.Stmt{&ast.ReturnStmt{Results: []ast.Expr{&ast.Ident{Name: "_r"}}}}},
+				},
+				&ast.ReturnStmt{Results: []ast.Expr{zeroPointerExpr(flat[0].typ)}},
+			}, fn.Body.List[i+1:]...)...)
+			changed = true
+			break
+		}
+	}
+	return changed
 }
 
 func buildNilablePointersRegions(dirs []nilablePointersDirective) []ast.NilablePointersRegion {
