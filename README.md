@@ -1,10 +1,51 @@
 # modernize
 
-A small source rewriter for [Better](https://github.com/Better14/Better) that uses `T!` result types and `!` error propagation.
+A source rewriter for [Better](https://github.com/Better14/Better) that migrates code to fork syntax: `T!` result types, `expr!` error propagation, and nilable pointer types (`*T` / `*T?`).
 
-It walks a directory of Go files and updates common error-handling patterns to the shorter fork syntax. Files are rewritten in place.
+It walks a module or directory of Go files and rewrites them in place. Files are processed per package so nilable-pointer inference can use call sites within the package.
 
 ## What it changes
+
+### Nilable pointers
+
+Adds `nilable_pointers enable` to `go.mod` when missing, then annotates pointer types:
+
+- `*T?` when nil can flow in (nil assignment, `return nil`, `nil` arguments, zero-init `var p *T`, `json:",omitempty"` pointer fields)
+- `*T` (strict) when no nil evidence is found in the package — preferred wherever inference allows
+
+Respects `//go:nilable_pointers disable` … `end` regions (those types are left unchanged).
+
+**Example:**
+
+```go
+func Find(id int) *User {
+    return nil
+}
+func Conn() *DB {
+    if db == nil {
+        panic("uninitialized")
+    }
+    return db
+}
+```
+
+becomes:
+
+```go
+func Find(id int) *User? {
+    return nil
+}
+func Conn() *DB {
+    if db == nil {
+        panic("uninitialized")
+    }
+    return db
+}
+```
+
+(`db` would be `*DB?` if it is zero-initialized or assigned `nil` elsewhere.)
+
+### Error propagation (`T!` / `expr!`)
 
 **Drop redundant `nil` on success** (in `T!` functions):
 
@@ -24,23 +65,22 @@ if err := fn(); err != nil {
 fn()!
 ```
 
-The same rewrite applies to `err := fn(); if err != nil { return err }` and `_, err := fn(); …`.
-
-It skips `vendor/`, `.git/`, nested function literals, and cases where transforming would break the code (for example, when `err` is still needed later).
+Skips `vendor/`, `.git/`, `testdata/`, and `_test.go` files.
 
 ## Requirements
 
-Build and run with **Better** as `GOROOT` — the output uses `T!` and `expr!`, which standard Go does not accept.
+Build and run with **Better** as `GOROOT` — the output uses `T!`, `expr!`, and `*T?`, which standard Go does not accept.
 
 ## Usage
 
 ```bash
 export GOROOT=/path/to/go-fork
+export PATH=$GOROOT/bin:$PATH
 
 go build -o modernize .
 
-# default root is "minio"; pass a path to scan another tree
-./modernize ./path/to/package
+# default root is "."; pass a path to scan another tree
+./modernize ./path/to/module
 ```
 
 Each modified file path is printed; a summary count is written to stderr.
