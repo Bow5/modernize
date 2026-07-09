@@ -1076,8 +1076,12 @@ func (m *fileModernizer) matchIfInitErr(stmt ast.Stmt, list []ast.Stmt, i int, v
 		if isBlank(valLHS) {
 			return &ast.ExprStmt{X: bangExpr(call)}, true
 		}
+		tok := token.DEFINE
+		if id, ok := valLHS.(*ast.Ident); ok && identDeclaredInStmts(list, i, id.Name, params) {
+			tok = token.ASSIGN
+		}
 		return &ast.AssignStmt{
-			Tok: token.DEFINE,
+			Tok: tok,
 			Lhs: []ast.Expr{astutilClone(valLHS)},
 			Rhs: []ast.Expr{bangExpr(call)},
 		}, true
@@ -1158,8 +1162,12 @@ func (m *fileModernizer) matchAssignErrCheck(asg ast.Stmt, list []ast.Stmt, i in
 	if isBlank(valLHS) {
 		return &ast.ExprStmt{X: bangExpr(call)}, true
 	}
+	tok := token.DEFINE
+	if id, ok := valLHS.(*ast.Ident); ok && identDeclaredInStmts(list, i, id.Name, params) {
+		tok = token.ASSIGN
+	}
 	return &ast.AssignStmt{
-		Tok: token.DEFINE,
+		Tok: tok,
 		Lhs: []ast.Expr{astutilClone(valLHS)},
 		Rhs: []ast.Expr{bangExpr(call)},
 	}, true

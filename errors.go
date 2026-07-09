@@ -68,6 +68,9 @@ func (em *errorsModernizer) collectCustomErrorTypes() {
 			if !ok || st.Fields == nil {
 				continue
 			}
+			if len(st.Fields.List) == 0 {
+				continue // sentinel marker type, keep comparable
+			}
 			if em.hasBaseEmbed(st) {
 				continue
 			}
