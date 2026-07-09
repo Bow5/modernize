@@ -30,6 +30,11 @@ func main() {
 		} else if changed {
 			fmt.Println(filepath.Join(modRoot, "go.mod"))
 		}
+		if n, err := disableNilablePointersOnGenFiles(absRoot); err != nil {
+			fmt.Fprintf(os.Stderr, "gen files: %v\n", err)
+		} else if n > 0 {
+			fmt.Fprintf(os.Stderr, "marked %d *_gen.go files nilable_pointers disable\n", n)
+		}
 	}
 
 	pkgs, err := collectPackages(absRoot)
@@ -69,7 +74,7 @@ func collectPackages(root string) ([]pkgFiles, error) {
 			}
 			return nil
 		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") || strings.HasSuffix(path, "_gen.go") {
 			return nil
 		}
 		dir := filepath.Dir(path)
@@ -105,7 +110,9 @@ func modernizePackage(pkg pkgFiles) (changedFiles int, counts rewriteCounts, err
 		files[i] = f
 	}
 
-	nilableChanged := applyPtrAnnotations(fset, files)
+	// Pointer annotations (*T vs *T?) are opt-in per-site; automatic inference is
+	// still too aggressive for large codebases like minio.
+	nilableChanged := make([]bool, len(files))
 
 	for i, path := range pkg.paths {
 		_, n, fileChanged, e := modernizeParsedFile(fset, files[i], path, nilableChanged[i])
@@ -130,6 +137,7 @@ func modernizeParsedFile(fset *token.FileSet, f *ast.File, path string, forceWri
 	ast.Inspect(f, func(n ast.Node) bool {
 		if fn, ok := n.(*ast.FuncDecl); ok {
 			mod.simplifyNilReturnsInFunc(fn)
+			mod.fixErrorReturns(fn)
 			mod.propagateReturnErrInFunc(fn)
 			mod.removeUnusedErrVarInFunc(fn)
 		}
@@ -180,6 +188,47 @@ func (m *fileModernizer) simplifyNilReturnsInFunc(fn *ast.FuncDecl) {
 		m.mark()
 		return true
 	})
+}
+
+// fixErrorReturns rewrites `return zero, err` to `return err` in (T, error) and T! functions.
+func (m *fileModernizer) fixErrorReturns(fn *ast.FuncDecl) {
+	if fn.Type == nil || fn.Body == nil || !canFixErrorReturns(fn.Type) {
+		return
+	}
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		if _, ok := n.(*ast.FuncLit); ok {
+			return false
+		}
+		ret, ok := n.(*ast.ReturnStmt)
+		if !ok || len(ret.Results) != 2 {
+			return true
+		}
+		if isNilExpr(ret.Results[1]) {
+			return true
+		}
+		if !isNilExpr(ret.Results[0]) && !isZeroReturnValue(ret.Results[0]) {
+			return true
+		}
+		ret.Results = []ast.Expr{ret.Results[1]}
+		m.mark()
+		return true
+	})
+}
+
+func isZeroReturnValue(e ast.Expr) bool {
+	e = ast.Unparen(e)
+	switch z := e.(type) {
+	case *ast.BasicLit:
+		return z.Value == "0" || z.Value == "0.0" || z.Value == "false" || z.Value == "\"\""
+	case *ast.Ident:
+		return z.Name == "nil"
+	default:
+		return false
+	}
+}
+
+func canFixErrorReturns(ft *ast.FuncType) bool {
+	return hasResultTypeBang(ft)
 }
 
 func hasResultTypeBang(ft *ast.FuncType) bool {

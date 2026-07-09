@@ -85,9 +85,7 @@ func (a *ptrAnnotator) collectGenDecl(g *ast.GenDecl) {
 			for _, name := range vs.Names {
 				key := ptrSiteKey{kind: "var", name: name.Name, index: -1}
 				a.registerPtrType(key, vs.Type)
-				if len(vs.Values) == 0 {
-					a.nilable[key] = true
-				} else if len(vs.Values) == 1 && isNilExpr(vs.Values[0]) {
+				if len(vs.Values) == 1 && isNilExpr(vs.Values[0]) {
 					a.nilable[key] = true
 				}
 			}
@@ -194,9 +192,7 @@ func (a *ptrAnnotator) collectLocalVars(owner string, body *ast.BlockStmt) {
 			for _, name := range vs.Names {
 				key := ptrSiteKey{kind: "var", owner: owner, name: name.Name, index: -1}
 				a.registerPtrType(key, vs.Type)
-				if len(vs.Values) == 0 {
-					a.nilable[key] = true
-				} else if len(vs.Values) == 1 && isNilExpr(vs.Values[0]) {
+				if len(vs.Values) == 1 && isNilExpr(vs.Values[0]) {
 					a.nilable[key] = true
 				}
 			}
@@ -206,10 +202,8 @@ func (a *ptrAnnotator) collectLocalVars(owner string, body *ast.BlockStmt) {
 }
 
 func fieldHasOmitempty(field *ast.Field) bool {
-	if field.Tag == nil {
-		return false
-	}
-	return strings.Contains(field.Tag.Value, "omitempty")
+	// omitempty tags alone are not sufficient evidence for NPT annotation.
+	return false
 }
 
 func (a *ptrAnnotator) scanNilEvidence(f *ast.File) {
@@ -277,6 +271,13 @@ func (a *ptrAnnotator) scanReturn(ret *ast.ReturnStmt, fn *ast.FuncDecl) {
 		if !isNilExpr(expr) || i >= len(flat) {
 			continue
 		}
+		if len(ret.Results) == 1 {
+			continue
+		}
+		// return nil, ... in multi-value returns is almost always an error path zero value.
+		if i == 0 && isNilExpr(expr) {
+			continue
+		}
 		if plainStarType(flat[i].typ) != nil {
 			a.nilable[flat[i].key] = true
 		}
@@ -284,25 +285,8 @@ func (a *ptrAnnotator) scanReturn(ret *ast.ReturnStmt, fn *ast.FuncDecl) {
 }
 
 func (a *ptrAnnotator) scanCall(call *ast.CallExpr) {
-	fnName, _, _ := callTarget(call.Fun)
-	if fnName == "" {
-		return
-	}
-	decls := a.funcs[fnName]
-	for _, fn := range decls {
-		if fn.Type == nil || fn.Type.Params == nil {
-			continue
-		}
-		flat := flattenFields("param", fn.Name.Name, fn.Type.Params)
-		for i, arg := range call.Args {
-			if !isNilExpr(arg) || i >= len(flat) {
-				continue
-			}
-			if plainStarType(flat[i].typ) != nil {
-				a.nilable[flat[i].key] = true
-			}
-		}
-	}
+	// Do not infer nilable pointer parameters from nil arguments at call sites.
+	// Output parameters are often passed as nil and written before use.
 }
 
 func flattenFields(kind, owner string, fields *ast.FieldList) []typedField {
@@ -376,9 +360,18 @@ func compositeLitTypeName(lit *ast.CompositeLit) string {
 		return t.Name
 	case *ast.SelectorExpr:
 		return t.Sel.Name
+	case *ast.IndexExpr:
+		if id, ok := t.X.(*ast.Ident); ok {
+			return id.Name
+		}
+	case *ast.UnaryExpr:
+		if t.Op == token.AND {
+			return compositeLitTypeName(&ast.CompositeLit{Type: t.X})
+		}
 	default:
 		return ""
 	}
+	return ""
 }
 
 func selectorField(sel *ast.SelectorExpr) (typeName, field string, ok bool) {
@@ -395,11 +388,95 @@ func applyPtrAnnotations(fset *token.FileSet, files []*ast.File) []bool {
 	ann.analyze()
 	changed := make([]bool, len(files))
 	for i, f := range files {
+		fileChanged := false
 		if rewriteFilePointerTypes(fset, f, ann) {
-			changed[i] = true
+			fileChanged = true
+		}
+		if syncMethodReturnsForNilableFields(fset, f, ann) {
+			fileChanged = true
+		}
+		changed[i] = fileChanged
+	}
+	return changed
+}
+
+func syncMethodReturnsForNilableFields(fset *token.FileSet, f *ast.File, ann *ptrAnnotator) bool {
+	changed := false
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv == nil || fn.Type == nil || fn.Type.Results == nil || len(fn.Type.Results.List) != 1 {
+			continue
+		}
+		if plainStarType(fn.Type.Results.List[0].Type) == nil {
+			continue
+		}
+		recvName, recvTypeName, ok := recvNameAndType(fn.Recv)
+		if !ok || recvTypeName == "" || fn.Body == nil {
+			continue
+		}
+		fieldName := returnedFieldName(fn.Body, recvName)
+		if fieldName == "" {
+			continue
+		}
+		key := ptrSiteKey{kind: "field", owner: recvTypeName, name: fieldName, index: -1}
+		if !ann.nilable[key] {
+			continue
+		}
+		if newTyp, ok := rewriteTypeAt(fset, f, fn.Type.Results.List[0].Type, true); ok {
+			fn.Type.Results.List[0].Type = newTyp
+			changed = true
 		}
 	}
 	return changed
+}
+
+func recvNameAndType(recv *ast.FieldList) (recvName, typeName string, ok bool) {
+	if recv == nil || len(recv.List) != 1 || len(recv.List[0].Names) != 1 {
+		return "", "", false
+	}
+	recvName = recv.List[0].Names[0].Name
+	return recvName, typeNameFromExpr(recv.List[0].Type), true
+}
+
+func typeNameFromExpr(t ast.Expr) string {
+	switch x := ast.Unparen(t).(type) {
+	case *ast.Ident:
+		return x.Name
+	case *ast.StarExpr:
+		return typeNameFromExpr(x.X)
+	case *ast.IndexExpr:
+		if id, ok := x.X.(*ast.Ident); ok {
+			return id.Name
+		}
+	case *ast.IndexListExpr:
+		if id, ok := x.X.(*ast.Ident); ok {
+			return id.Name
+		}
+	}
+	return ""
+}
+
+func returnedFieldName(body *ast.BlockStmt, recvName string) string {
+	if body == nil {
+		return ""
+	}
+	var field string
+	ast.Inspect(body, func(n ast.Node) bool {
+		ret, ok := n.(*ast.ReturnStmt)
+		if !ok || len(ret.Results) != 1 {
+			return true
+		}
+		sel, ok := ast.Unparen(ret.Results[0]).(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if id, ok := sel.X.(*ast.Ident); !ok || id.Name != recvName {
+			return true
+		}
+		field = sel.Sel.Name
+		return true
+	})
+	return field
 }
 
 func rewriteFilePointerTypes(fset *token.FileSet, f *ast.File, ann *ptrAnnotator) bool {
