@@ -41,7 +41,7 @@ func h(err error) error {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mod := &fileModernizer{fset: fset, file: f}
+	mod := &fileModernizer{fset: fset, file: f, cfg: DefaultConfig()}
 	n, _ := mod.modernizeStructuredErrors()
 	if n != 2 {
 		t.Fatalf("expected 2 fmt.Errorf rewrites, got %d", n)
@@ -81,7 +81,7 @@ func fail() error {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mod := &fileModernizer{fset: fset, file: f}
+	mod := &fileModernizer{fset: fset, file: f, cfg: DefaultConfig()}
 	_, custom := mod.modernizeStructuredErrors()
 	if custom < 2 {
 		t.Fatalf("expected custom error rewrites, got %d", custom)
@@ -118,7 +118,7 @@ func newMyErr(code int) MyErr {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mod := &fileModernizer{fset: fset, file: f}
+	mod := &fileModernizer{fset: fset, file: f, cfg: DefaultConfig()}
 	_, custom := mod.modernizeStructuredErrors()
 	if custom < 2 {
 		t.Fatalf("expected custom error rewrites, got %d", custom)
@@ -151,7 +151,7 @@ type Saver interface {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, changed, err := modernizeParsedFile(fset, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil)
+	_, _, changed, err := modernizeParsedFile(fset, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func fail() error {
 		t.Fatal(err)
 	}
 	pkgEmbed := collectPackageEmbedOnlyTypes([]*ast.File{f})
-	mod := &fileModernizer{fset: fset, file: f, pkgEmbed: pkgEmbed}
+	mod := &fileModernizer{fset: fset, file: f, pkgEmbed: pkgEmbed, cfg: DefaultConfig()}
 	_, custom := mod.modernizeStructuredErrors()
 	if custom < 3 {
 		t.Fatalf("expected custom error rewrites, got %d", custom)
@@ -230,7 +230,7 @@ func makeErr() error {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mod := &fileModernizer{fset: fset, file: f}
+	mod := &fileModernizer{fset: fset, file: f, cfg: DefaultConfig()}
 	_, custom := mod.modernizeStructuredErrors()
 	if custom < 2 {
 		t.Fatalf("expected custom error rewrites, got %d", custom)
@@ -265,7 +265,7 @@ func parse(s string) error {
 		t.Fatal(err)
 	}
 	pkgExtra := collectPackageHasExtraErrorTypes([]*ast.File{f})
-	mod := &fileModernizer{fset: fset, file: f, pkgExtraFields: pkgExtra}
+	mod := &fileModernizer{fset: fset, file: f, pkgExtraFields: pkgExtra, cfg: DefaultConfig()}
 	_, custom := mod.modernizeStructuredErrors()
 	if custom < 2 {
 		t.Fatalf("expected custom error rewrites, got %d", custom)
@@ -293,7 +293,7 @@ func f() error {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mod := &fileModernizer{fset: fset, file: f}
+	mod := &fileModernizer{fset: fset, file: f, cfg: DefaultConfig()}
 	mod.modernizeStructuredErrors()
 	out := formatTestFile(fset, f)
 	if strings.Contains(out, `"fmt"`) {
@@ -322,7 +322,7 @@ func lockedOpen() (*os.File, error) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, changed, err := modernizeParsedFile(fset, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil)
+	_, _, changed, err := modernizeParsedFile(fset, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +362,7 @@ func ErrorToErr(err error) Err {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mod := &fileModernizer{fset: fset, file: f}
+	mod := &fileModernizer{fset: fset, file: f, cfg: DefaultConfig()}
 	_, custom := mod.modernizeStructuredErrors()
 	if custom < 1 {
 		t.Fatalf("expected Base embed, got %d", custom)
@@ -400,7 +400,7 @@ func lockedOpen(path string) (*os.File, error) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, changed, err := modernizeParsedFile(fset, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil)
+	_, _, changed, err := modernizeParsedFile(fset, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}

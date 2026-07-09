@@ -24,16 +24,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	cfg, cfgPath, err := loadConfig(absRoot)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if cfgPath != "" {
+		fmt.Fprintf(os.Stderr, "using config %s\n", cfgPath)
+	}
+
 	if modRoot, ok := findModuleRoot(absRoot); ok {
-		if changed, err := ensureNilablePointers(modRoot); err != nil {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", filepath.Join(modRoot, "go.mod"), err)
-		} else if changed {
-			fmt.Println(filepath.Join(modRoot, "go.mod"))
+		if cfg.NilablePointersGoMod {
+			if changed, err := ensureNilablePointers(modRoot); err != nil {
+				fmt.Fprintf(os.Stderr, "%s: %v\n", filepath.Join(modRoot, "go.mod"), err)
+			} else if changed {
+				fmt.Println(filepath.Join(modRoot, "go.mod"))
+			}
 		}
-		if n, err := disableNilablePointersOnGenFiles(absRoot); err != nil {
-			fmt.Fprintf(os.Stderr, "gen files: %v\n", err)
-		} else if n > 0 {
-			fmt.Fprintf(os.Stderr, "marked %d *_gen.go files nilable_pointers disable\n", n)
+		if cfg.NilablePointersGenDisable {
+			if n, err := disableNilablePointersOnGenFiles(absRoot); err != nil {
+				fmt.Fprintf(os.Stderr, "gen files: %v\n", err)
+			} else if n > 0 {
+				fmt.Fprintf(os.Stderr, "marked %d *_gen.go files nilable_pointers disable\n", n)
+			}
 		}
 	}
 
@@ -45,7 +58,7 @@ func main() {
 
 	var changedFiles, errBangTotal, nilableTotal, fmtErrorfTotal, customErrTotal int
 	for _, pkg := range pkgs {
-		c, n, e := modernizePackage(pkg)
+		c, n, e := modernizePackage(pkg, cfg)
 		if e != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", pkg.dir, e)
 			continue
@@ -103,7 +116,7 @@ type rewriteCounts struct {
 	customErr int
 }
 
-func modernizePackage(pkg pkgFiles) (changedFiles int, counts rewriteCounts, err error) {
+func modernizePackage(pkg pkgFiles, cfg Config) (changedFiles int, counts rewriteCounts, err error) {
 	fset := token.NewFileSet()
 	files := make([]*ast.File, len(pkg.paths))
 	for i, path := range pkg.paths {
@@ -115,12 +128,15 @@ func modernizePackage(pkg pkgFiles) (changedFiles int, counts rewriteCounts, err
 		files[i] = f
 	}
 
-	nilableChanged := applyPtrAnnotations(fset, files)
+	nilableChanged := make([]bool, len(files))
+	if cfg.NilablePointersAnnotate {
+		nilableChanged = applyPtrAnnotations(fset, files)
+	}
 	pkgEmbed := collectPackageEmbedOnlyTypes(files)
 	pkgExtraFields := collectPackageHasExtraErrorTypes(files)
 
 	for i, path := range pkg.paths {
-		_, countsPart, fileChanged, e := modernizeParsedFile(fset, files[i], path, nilableChanged[i], pkgEmbed, pkgExtraFields)
+		_, countsPart, fileChanged, e := modernizeParsedFile(fset, files[i], path, nilableChanged[i], pkgEmbed, pkgExtraFields, cfg)
 		if e != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", path, e)
 			continue
@@ -139,31 +155,35 @@ func modernizePackage(pkg pkgFiles) (changedFiles int, counts rewriteCounts, err
 	return changedFiles, counts, nil
 }
 
-func modernizeParsedFile(fset *token.FileSet, f *ast.File, path string, forceWrite bool, pkgEmbed map[string]string, pkgExtraFields map[string][]string) (nilableChanged bool, counts rewriteCounts, changed bool, err error) {
-	mod := &fileModernizer{fset: fset, file: f, pkgEmbed: pkgEmbed, pkgExtraFields: pkgExtraFields}
+func modernizeParsedFile(fset *token.FileSet, f *ast.File, path string, forceWrite bool, pkgEmbed map[string]string, pkgExtraFields map[string][]string, cfg Config) (nilableChanged bool, counts rewriteCounts, changed bool, err error) {
+	mod := &fileModernizer{fset: fset, file: f, pkgEmbed: pkgEmbed, pkgExtraFields: pkgExtraFields, cfg: cfg}
 
-	// (T, error) → T! signatures and try/bang patterns inside newly converted bodies.
-	ast.Inspect(f, func(n ast.Node) bool {
-		switch n := n.(type) {
-		case *ast.FuncDecl:
-			mod.modernizeFunc(n)
-		case *ast.InterfaceType:
-			mod.modernizeInterface(n)
-		}
-		return true
-	})
+	if cfg.ErrBangSignatures {
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch n := n.(type) {
+			case *ast.FuncDecl:
+				mod.modernizeFunc(n)
+			case *ast.InterfaceType:
+				mod.modernizeInterface(n)
+			}
+			return true
+		})
+	}
 
-	// err! propagation and cleanup (works on T! and error-returning functions).
-	ast.Inspect(f, func(n ast.Node) bool {
-		if fn, ok := n.(*ast.FuncDecl); ok {
-			mod.simplifyNilReturnsInFunc(fn)
-			mod.fixErrorReturns(fn)
-			mod.propagateReturnErrInFunc(fn)
-			mod.removeUnusedErrVarInFunc(fn)
-		}
-		return true
-	})
-	counts.fmtErrorf, counts.customErr = mod.modernizeStructuredErrors()
+	if cfg.ErrBangBody {
+		ast.Inspect(f, func(n ast.Node) bool {
+			if fn, ok := n.(*ast.FuncDecl); ok {
+				mod.simplifyNilReturnsInFunc(fn)
+				mod.fixErrorReturns(fn)
+				mod.propagateReturnErrInFunc(fn)
+				mod.removeUnusedErrVarInFunc(fn)
+			}
+			return true
+		})
+	}
+	if cfg.anyStructuredErrors() {
+		counts.fmtErrorf, counts.customErr = mod.modernizeStructuredErrors()
+	}
 	counts.errBang = mod.errBangCount
 
 	if !mod.changed && !forceWrite {
@@ -183,7 +203,7 @@ func modernizeFile(path string) (bool, int, error) {
 		return false, 0, err
 	}
 	f.NilablePointersRegions = buildNilablePointersRegions(collectNilablePointersDirectives(f))
-	_, countsPart, changed, err := modernizeParsedFile(fset, f, path, applyPtrAnnotations(fset, []*ast.File{f})[0], nil, nil)
+	_, countsPart, changed, err := modernizeParsedFile(fset, f, path, applyPtrAnnotations(fset, []*ast.File{f})[0], nil, nil, DefaultConfig())
 	return changed, countsPart.errBang, err
 }
 
@@ -192,6 +212,7 @@ type fileModernizer struct {
 	file           *ast.File
 	pkgEmbed       map[string]string   // embed-only error type → removed message field (package scope)
 	pkgExtraFields map[string][]string // has-extra error type → domain field names (package scope)
+	cfg            Config
 	changed        bool
 	errBangCount   int
 }
@@ -862,7 +883,7 @@ func (m *fileModernizer) modernizeFunc(fn *ast.FuncDecl) {
 	if !ok {
 		return
 	}
-	if fn.Body != nil {
+	if fn.Body != nil && m.cfg.ErrBangSignatures {
 		var params []string
 		if fn.Type != nil {
 			params = paramNames(fn.Type)
@@ -871,7 +892,7 @@ func (m *fileModernizer) modernizeFunc(fn *ast.FuncDecl) {
 			if _, ok := n.(*ast.FuncLit); ok {
 				return false
 			}
-			if b, ok := n.(*ast.BlockStmt); ok {
+			if b, ok := n.(*ast.BlockStmt); ok && m.cfg.ErrBangBody {
 				m.modernizeBody(b, vt, params)
 			}
 			return true

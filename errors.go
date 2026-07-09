@@ -27,6 +27,7 @@ type errorsModernizer struct {
 	*fileModernizer
 	types        map[string]*customErrorType
 	importsAdded map[string]bool
+	cfg          Config
 }
 
 func (m *fileModernizer) modernizeStructuredErrors() (fmtErrorf, customErrors int) {
@@ -34,19 +35,26 @@ func (m *fileModernizer) modernizeStructuredErrors() (fmtErrorf, customErrors in
 		fileModernizer: m,
 		types:          map[string]*customErrorType{},
 		importsAdded:   map[string]bool{},
+		cfg:            m.cfg,
 	}
-	em.collectCustomErrorTypes()
+	if m.cfg.ErrorsBaseEmbed || m.cfg.ErrorsBaseSetMsg || m.cfg.ErrorsBaseUsages {
+		em.collectCustomErrorTypes()
+	}
 	if len(em.types) > 0 {
 		customErrors = em.rewriteCustomErrorTypes()
-		if len(em.pkgEmbed) > 0 {
+		if m.cfg.ErrorsBaseMessageFieldRefs && len(em.pkgEmbed) > 0 {
 			customErrors += em.rewriteRemovedMessageFieldRefs()
 		}
-		customErrors += em.rewriteCustomErrorUsages()
+		if m.cfg.ErrorsBaseUsages {
+			customErrors += em.rewriteCustomErrorUsages()
+		}
 	}
-	if len(em.pkgExtraFields) > 0 {
+	if m.cfg.ErrorsBasePositionalComposites && len(em.pkgExtraFields) > 0 {
 		customErrors += em.rewritePositionalErrorComposites()
 	}
-	fmtErrorf = em.rewriteFmtErrorfCalls()
+	if m.cfg.FmtErrorfToErrorsNew {
+		fmtErrorf = em.rewriteFmtErrorfCalls()
+	}
 	if em.pruneUnusedImport("fmt") {
 		em.mark()
 	}
@@ -258,14 +266,18 @@ func isStringType(t ast.Expr) bool {
 
 func (em *errorsModernizer) rewriteCustomErrorTypes() int {
 	count := 0
-	for _, info := range em.types {
-		if info.embedOnly {
-			count += em.rewriteEmbedOnlyType(info)
-		} else if info.hasExtra {
-			count += em.rewriteExtraFieldType(info)
+	if em.cfg.ErrorsBaseEmbed {
+		for _, info := range em.types {
+			if info.embedOnly {
+				count += em.rewriteEmbedOnlyType(info)
+			} else if info.hasExtra {
+				count += em.rewriteExtraFieldType(info)
+			}
 		}
 	}
-	count += em.rewriteSetMsgFactories()
+	if em.cfg.ErrorsBaseSetMsg {
+		count += em.rewriteSetMsgFactories()
+	}
 	return count
 }
 

@@ -1,0 +1,13 @@
+{
+  "nilable_pointers_go_mod": true,
+  "nilable_pointers_gen_disable": true,
+  "nilable_pointers_annotate": true,
+  "err_bang_signatures": true,
+  "err_bang_body": true,
+  "fmt_errorf_to_errors_new": true,
+  "errors_base_embed": true,
+  "errors_base_setmsg": true,
+  "errors_base_positional_composites": true,
+  "errors_base_message_field_refs": true,
+  "errors_base_usages": true
+}
