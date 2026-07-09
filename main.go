@@ -13,10 +13,6 @@ import (
 	"strings"
 )
 
-// Err! body rewrites are disabled until the compiler escape pass handles
-// ForceExpr reliably (leftover labels ICE in large packages like minio/cmd).
-const enableErrBangBodyRewrites = false
-
 func main() {
 	root := "."
 	if len(os.Args) > 1 {
@@ -164,9 +160,7 @@ func modernizeParsedFile(fset *token.FileSet, f *ast.File, path string, forceWri
 		if fn, ok := n.(*ast.FuncDecl); ok {
 			mod.simplifyNilReturnsInFunc(fn)
 			mod.fixErrorReturns(fn)
-			if enableErrBangBodyRewrites {
-				mod.propagateReturnErrInFunc(fn)
-			}
+			mod.propagateReturnErrInFunc(fn)
 			mod.removeUnusedErrVarInFunc(fn)
 		}
 		return true
@@ -870,7 +864,7 @@ func (m *fileModernizer) modernizeFunc(fn *ast.FuncDecl) {
 	if !ok {
 		return
 	}
-	if fn.Body != nil && enableErrBangBodyRewrites {
+	if fn.Body != nil {
 		var params []string
 		if fn.Type != nil {
 			params = paramNames(fn.Type)

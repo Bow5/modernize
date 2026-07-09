@@ -162,7 +162,7 @@ type Saver interface {
 	if !strings.Contains(out, "func Load() *File!") {
 		t.Fatalf("missing T! result type:\n%s", out)
 	}
-	if enableErrBangBodyRewrites && !strings.Contains(out, "open()!") {
+	if !strings.Contains(out, "open()!") {
 		t.Fatalf("missing try/bang in converted body:\n%s", out)
 	}
 	if strings.Contains(out, ", error)") {
