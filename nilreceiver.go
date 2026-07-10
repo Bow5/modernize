@@ -378,6 +378,8 @@ func modernizeNilReceivers(f *ast.File, files []*ast.File, cfg Config, modIdx *m
 		chains = optionalMethodChains(f, files, guardIdx)
 		chains += nilablePointerChains(f, files, returns, modIdx)
 		chains += nilableMethodGuards(f, files, returns, modIdx)
+		chains += coalesceOptionalStringFieldReads(f, files, returns, modIdx)
+		chains += stripNonNilableCoalesce(f)
 		chains += rewriteIfNilableChainConditions(f, files, returns, modIdx)
 		chains += coalesceOptionalFieldsInCompositeLits(f, buildStructFieldIndex(files))
 	}
@@ -970,7 +972,6 @@ func nilableChainsInNode(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *return
 		}
 		vars := varIdx.byFunc[fn]
 		count += processNilableSelector(sel, returns, modIdx, varIdx.fnFile[fn], varIdx.structs, fn, vars, varIdx.pkgVars, narrowed)
-		count += maybeCoalesceStringFieldRead(sel, returns, modIdx, varIdx.fnFile[fn], varIdx.structs, fn, vars, varIdx.pkgVars, node)
 		return true
 	})
 	return count
@@ -1277,7 +1278,26 @@ func nilableMethodGuardFromAssign(fn *ast.FuncDecl, varIdx *funcVarIndex, return
 	skip := 0
 	refNames := assignRefNames(assign)
 	if block != nil && blockIdx >= 0 && len(refNames) > 0 && anyUsedLater(block, blockIdx, refNames) {
-		last := lastReferencingStmt(block, blockIdx, refNames)
+		names := append([]string{}, refNames...)
+		last := lastReferencingStmt(block, blockIdx, names)
+		for expanded := true; expanded; {
+			expanded = false
+			for i := blockIdx + 1; i <= last; i++ {
+				for _, name := range localNamesFromStmt(block[i]) {
+					if !containsString(names, name) {
+						names = append(names, name)
+						expanded = true
+					}
+				}
+			}
+			if expanded {
+				newLast := lastReferencingStmt(block, blockIdx, names)
+				if newLast > last {
+					last = newLast
+					expanded = true
+				}
+			}
+		}
 		if last > blockIdx {
 			skip = last - blockIdx
 			guard.Body.List = append(guard.Body.List, block[blockIdx+1:last+1]...)
@@ -1395,7 +1415,23 @@ func nilableRootStmtGuard(fn *ast.FuncDecl, varIdx *funcVarIndex, f *ast.File, s
 	body := []ast.Stmt{stmt}
 	skip := 0
 	if block != nil && blockIdx >= 0 {
-		last := lastReferencingStmt(block, blockIdx, []string{root})
+		names := []string{root}
+		names = append(names, localNamesFromStmt(stmt)...)
+		last := lastReferencingStmt(block, blockIdx, names)
+		for expanded := true; expanded; {
+			expanded = false
+			for i := blockIdx + 1; i <= last; i++ {
+				for _, name := range localNamesFromStmt(block[i]) {
+					if !containsString(names, name) {
+						names = append(names, name)
+						expanded = true
+					}
+				}
+			}
+			if expanded {
+				last = lastReferencingStmt(block, blockIdx, names)
+			}
+		}
 		if last > blockIdx {
 			for i := blockIdx + 1; i <= last; i++ {
 				rewriteRootAccessInStmt(block[i], root, "_root")
@@ -1689,6 +1725,126 @@ func coalesceOptionalFieldsInCompositeLits(f *ast.File, structs *structFieldInde
 		return true
 	})
 	return count
+}
+
+func localNamesFromStmt(stmt ast.Stmt) []string {
+	assign, ok := stmt.(*ast.AssignStmt)
+	if !ok {
+		return nil
+	}
+	return assignRefNames(assign)
+}
+
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+func coalesceOptionalStringFieldReads(f *ast.File, files []*ast.File, returns *returnTypeIndex, modIdx *moduleFuncIndex) int {
+	varIdx := buildFuncVarIndex(files, returns, modIdx)
+	count := 0
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		count += coalesceStringFieldsInBlock(fn, varIdx, returns, modIdx, f, fn.Body.List, map[string]bool{})
+	}
+	return count
+}
+
+func coalesceStringFieldsInBlock(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, stmts []ast.Stmt, narrowed map[string]bool) int {
+	count := 0
+	for _, stmt := range stmts {
+		count += coalesceStringFieldsInNode(fn, varIdx, returns, modIdx, f, stmt, narrowed)
+		narrowed = narrowAfterStmt(stmt, narrowed)
+	}
+	return count
+}
+
+func coalesceStringFieldsInNode(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, node ast.Node, narrowed map[string]bool) int {
+	count := 0
+	ast.Inspect(node, func(n ast.Node) bool {
+		if _, ok := n.(*ast.FuncLit); ok {
+			return false
+		}
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		count += maybeCoalesceStringFieldRead(sel, returns, modIdx, f, varIdx.structs, fn, varIdx.byFunc[fn], varIdx.pkgVars, node)
+		return true
+	})
+	return count
+}
+
+func stripNonNilableCoalesce(f *ast.File) int {
+	count := 0
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		count += stripNonNilableCoalesceStmts(fn.Body.List)
+	}
+	return count
+}
+
+func stripNonNilableCoalesceStmts(stmts []ast.Stmt) int {
+	count := 0
+	for _, stmt := range stmts {
+		ast.Inspect(stmt, func(n ast.Node) bool {
+			be, ok := n.(*ast.BinaryExpr)
+			if !ok || be.Op != token.NULLCOALESCE {
+				return true
+			}
+			if sel, ok := ast.Unparen(be.X).(*ast.SelectorExpr); ok && !alreadyNullCond(sel.X) {
+				if replaceExprInTree(stmt, be, be.X) {
+					count++
+				}
+			}
+			return true
+		})
+	}
+	return count
+}
+
+func replaceExprInTree(root ast.Node, old, new ast.Expr) bool {
+	replaced := false
+	ast.Inspect(root, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.CallExpr:
+			for i, arg := range x.Args {
+				if ast.Unparen(arg) == old {
+					x.Args[i] = new
+					replaced = true
+				}
+			}
+		case *ast.KeyValueExpr:
+			if ast.Unparen(x.Value) == old {
+				x.Value = new
+				replaced = true
+			}
+		case *ast.AssignStmt:
+			for i, rhs := range x.Rhs {
+				if ast.Unparen(rhs) == old {
+					x.Rhs[i] = new
+					replaced = true
+				}
+			}
+		case *ast.BinaryExpr:
+			if ast.Unparen(x.X) == old {
+				x.X = new
+				replaced = true
+			}
+		}
+		return true
+	})
+	return replaced
 }
 
 func isStringishType(t ast.Expr) bool {
