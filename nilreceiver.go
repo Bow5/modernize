@@ -1108,17 +1108,17 @@ func nilableMethodGuards(f *ast.File, files []*ast.File, returns *returnTypeInde
 		if !ok || fn.Body == nil {
 			continue
 		}
-		fn.Body.List, count = rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, fn.Body.List, map[string]bool{}, count)
+		fn.Body.List, count = rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, fn.Body.List, map[string]bool{}, false, count)
 		count += rewriteFuncLitBodies(fn, varIdx, returns, modIdx, f, fn.Body.List, map[string]bool{}, 0)
 	}
 	return count
 }
 
-func rewriteNilableMethodStmts(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, stmts []ast.Stmt, narrowed map[string]bool, count int) ([]ast.Stmt, int) {
+func rewriteNilableMethodStmts(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, stmts []ast.Stmt, narrowed map[string]bool, inLoop bool, count int) ([]ast.Stmt, int) {
 	var out []ast.Stmt
 	for i := 0; i < len(stmts); i++ {
 		stmt := stmts[i]
-		rewritten, stmtCount, skip := rewriteNilableMethodStmt(fn, varIdx, returns, modIdx, f, stmt, narrowed, stmts, i)
+		rewritten, stmtCount, skip := rewriteNilableMethodStmt(fn, varIdx, returns, modIdx, f, stmt, narrowed, stmts, i, inLoop)
 		count += stmtCount
 		out = append(out, rewritten...)
 		i += skip
@@ -1137,7 +1137,7 @@ func rewriteFuncLitBodies(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *retur
 					return true
 				}
 				var added int
-				fl.Body.List, added = rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, fl.Body.List, map[string]bool{}, 0)
+				fl.Body.List, added = rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, fl.Body.List, map[string]bool{}, false, 0)
 				count += added
 				walk(fl.Body.List)
 				return true
@@ -1148,10 +1148,10 @@ func rewriteFuncLitBodies(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *retur
 	return count
 }
 
-func rewriteNilableMethodStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, stmt ast.Stmt, narrowed map[string]bool, block []ast.Stmt, blockIdx int) ([]ast.Stmt, int, int) {
+func rewriteNilableMethodStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, stmt ast.Stmt, narrowed map[string]bool, block []ast.Stmt, blockIdx int, inLoop bool) ([]ast.Stmt, int, int) {
 	switch s := stmt.(type) {
 	case *ast.BlockStmt:
-		list, n := rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, s.List, copyBoolMap(narrowed), 0)
+		list, n := rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, s.List, copyBoolMap(narrowed), false, 0)
 		s.List = list
 		return []ast.Stmt{s}, n, 0
 	case *ast.IfStmt:
@@ -1167,12 +1167,12 @@ func rewriteNilableMethodStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *r
 			inner[id] = true
 		}
 		if s.Body != nil {
-			list, n := rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, s.Body.List, inner, 0)
+			list, n := rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, s.Body.List, inner, false, 0)
 			s.Body.List = list
 			count += n
 		}
 		if s.Else != nil {
-			elseStmts, n, _ := rewriteNilableMethodStmt(fn, varIdx, returns, modIdx, f, s.Else, narrowed, nil, -1)
+			elseStmts, n, _ := rewriteNilableMethodStmt(fn, varIdx, returns, modIdx, f, s.Else, narrowed, nil, -1, inLoop)
 			count += n
 			if len(elseStmts) == 1 {
 				s.Else = elseStmts[0]
@@ -1181,7 +1181,7 @@ func rewriteNilableMethodStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *r
 		return []ast.Stmt{s}, count, 0
 	case *ast.ForStmt:
 		if s.Body != nil {
-			list, n := rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, s.Body.List, copyBoolMap(narrowed), 0)
+			list, n := rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, s.Body.List, copyBoolMap(narrowed), true, 0)
 			s.Body.List = list
 			return []ast.Stmt{s}, n, 0
 		}
@@ -1198,7 +1198,7 @@ func rewriteNilableMethodStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *r
 				}
 				guard.Body.List = []ast.Stmt{rangeStmt}
 				if s.Body != nil {
-					list, n := rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, guard.Body.List, copyBoolMap(narrowed), 0)
+					list, n := rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, guard.Body.List, copyBoolMap(narrowed), true, 0)
 					guard.Body.List = list
 					return []ast.Stmt{guard}, n + 1, 0
 				}
@@ -1206,20 +1206,22 @@ func rewriteNilableMethodStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *r
 			}
 		}
 		if s.Body != nil {
-			list, n := rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, s.Body.List, copyBoolMap(narrowed), 0)
+			list, n := rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, s.Body.List, copyBoolMap(narrowed), true, 0)
 			s.Body.List = list
 			return []ast.Stmt{s}, n, 0
 		}
 	case *ast.ExprStmt:
-		if stmts, n, skip, ok := nilableRootStmtGuard(fn, varIdx, f, s, narrowed, block, blockIdx); ok {
-			out := stmts
-			if guardHasReturn(stmts) {
-				if ret := defaultReturnStmt(fn); ret != nil {
-					out = append(out, ret)
-					n++
+		if !inLoop {
+			if stmts, n, skip, ok := nilableRootStmtGuard(fn, varIdx, f, s, narrowed, block, blockIdx); ok {
+				out := stmts
+				if guardHasReturn(stmts) {
+					if ret := defaultReturnStmt(fn); ret != nil {
+						out = append(out, ret)
+						n++
+					}
 				}
+				return out, n, skip
 			}
-			return out, n, skip
 		}
 		if guard, ok := nilableMethodGuardFromCall(fn, varIdx, returns, modIdx, f, s.X, narrowed); ok {
 			return []ast.Stmt{guard}, 1, 0
@@ -1228,15 +1230,17 @@ func rewriteNilableMethodStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *r
 			return []ast.Stmt{guard}, 1, 0
 		}
 	case *ast.AssignStmt:
-		if stmts, n, skip, ok := nilableRootStmtGuard(fn, varIdx, f, s, narrowed, block, blockIdx); ok {
-			out := stmts
-			if guardHasReturn(stmts) {
-				if ret := defaultReturnStmt(fn); ret != nil {
-					out = append(out, ret)
-					n++
+		if !inLoop {
+			if stmts, n, skip, ok := nilableRootStmtGuard(fn, varIdx, f, s, narrowed, block, blockIdx); ok {
+				out := stmts
+				if guardHasReturn(stmts) {
+					if ret := defaultReturnStmt(fn); ret != nil {
+						out = append(out, ret)
+						n++
+					}
 				}
+				return out, n, skip
 			}
-			return out, n, skip
 		}
 		if len(s.Lhs) == 1 {
 			if guard, ok := nilableFieldAssignGuard(fn, varIdx, returns, modIdx, f, s, narrowed); ok {
@@ -1255,7 +1259,7 @@ func rewriteNilableMethodStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *r
 		count := 0
 		for _, comm := range s.Body.List {
 			if clause, ok := comm.(*ast.CommClause); ok && clause.Body != nil {
-				list, n := rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, clause.Body, copyBoolMap(narrowed), 0)
+				list, n := rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, clause.Body, copyBoolMap(narrowed), inLoop, 0)
 				clause.Body = list
 				count += n
 			}
