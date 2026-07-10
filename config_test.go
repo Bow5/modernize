@@ -11,7 +11,8 @@ func TestDefaultConfigAllTrue(t *testing.T) {
 	if !cfg.NilablePointersGoMod || !cfg.NilablePointersAnnotate || !cfg.ErrBangSignatures ||
 		!cfg.ErrBangBody || !cfg.FmtErrorfToErrorsNew || !cfg.ErrorsBaseEmbed ||
 		!cfg.ErrorsBaseSetMsg || !cfg.ErrorsBasePositionalComposites ||
-		!cfg.ErrorsBaseMessageFieldRefs || !cfg.ErrorsBaseUsages {
+		!cfg.ErrorsBaseMessageFieldRefs || !cfg.ErrorsBaseUsages || !cfg.ShorthandTypes ||
+		!cfg.StepCommits {
 		t.Fatalf("expected all defaults true: %+v", cfg)
 	}
 }

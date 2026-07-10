@@ -1,6 +1,6 @@
 # modernize
 
-A source rewriter for [Bow](https://github.com/Bow5/Bow) that migrates code to fork syntax: `T!` result types, `expr!` error propagation, and nilable pointer types (`*T` / `*T?`).
+A source rewriter for [Bow](https://github.com/Bow5/Bow) that migrates code to fork syntax: `T!` result types, `expr!` error propagation, nilable pointer types (`*T` / `*T?`), and struct/interface shorthand (`struct T { … }`, `interface I { … }`).
 
 It walks a module or directory of Go files and rewrites them in place. Files are processed per package so nilable-pointer inference can use call sites within the package.
 
@@ -71,6 +71,17 @@ fn()!
 
 Skips `vendor/`, `.git/`, `testdata/`, and `_test.go` files.
 
+### Struct and interface shorthand
+
+Rewrites named struct and interface type declarations:
+
+```go
+type Person struct { Name string }     →  struct Person { Name string }
+type Stringer interface { String() string }  →  interface Stringer { String() string }
+```
+
+Skips parenthesized `type ( … )` groups, type aliases, generics, and non-struct/interface types. Also rewrites local `type` declarations inside function bodies.
+
 ### Structured errors (`errors.Base`)
 
 **`fmt.Errorf` → `errors.New`** when the format string is a literal with no `%w` (no error chaining):
@@ -115,6 +126,8 @@ go build -o modernize .
 # optional: per-target config at ./path/to/module/modernize.json
 # or MODERNIZE_CONFIG=/path/to/modernize.json
 ```
+
+With `step_commits` enabled (default), each rewrite pass is applied and committed separately when the target is a git or hg repository. See [docs/config.md](docs/config.md#step-commits).
 
 Each modified file path is printed; a summary count is written to stderr.
 

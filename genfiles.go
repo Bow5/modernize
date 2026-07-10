@@ -9,8 +9,8 @@ import (
 
 const nilableDisableDirective = "//go:nilable_pointers disable\n"
 
-func disableNilablePointersOnGenFiles(root string) (int, error) {
-	var changed int
+func disableNilablePointersOnGenFiles(root string) ([]string, error) {
+	var changed []string
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -36,7 +36,7 @@ func disableNilablePointersOnGenFiles(root string) (int, error) {
 		if err := os.WriteFile(path, []byte(updated), 0); err != nil {
 			return err
 		}
-		changed++
+		changed = append(changed, path)
 		fmt.Println(path)
 		return nil
 	})

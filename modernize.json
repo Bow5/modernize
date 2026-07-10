@@ -9,5 +9,7 @@
   "errors_base_setmsg": true,
   "errors_base_positional_composites": true,
   "errors_base_message_field_refs": true,
-  "errors_base_usages": true
+  "errors_base_usages": true,
+  "shorthand_types": true,
+  "step_commits": true
 }

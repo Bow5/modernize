@@ -33,47 +33,77 @@ func main() {
 		fmt.Fprintf(os.Stderr, "using config %s\n", cfgPath)
 	}
 
-	var changedFiles, callBangTotal, errBangTotal, nilableTotal, verifiedNonNilTotal, fmtErrorfTotal, customErrTotal int
+	if cfg.StepCommits {
+		if vcsRoot, kind := findVCSRoot(absRoot); kind != "" {
+			if err := runStepCommits(absRoot, cfg, vcsRoot, kind); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			return
+		}
+		fmt.Fprintf(os.Stderr, "step_commits enabled but no git/hg repo found; running without commits\n")
+	}
+
+	summary, err := runModernize(absRoot, cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	printSummary(summary)
+}
+
+func printSummary(summary passSummary) {
+	fmt.Fprintf(os.Stderr, "modernized %d files (%d nilable, %d verified *T, %d call()!, %d err!, %d fmt.Errorf→errors.New, %d custom errors, %d shorthand types)\n",
+		summary.changedFiles, summary.counts.nilable, summary.counts.verifiedNonNil, summary.counts.callBang,
+		summary.counts.errBang, summary.counts.fmtErrorf, summary.counts.customErr, summary.counts.shorthand)
+}
+
+func runModernize(absRoot string, cfg Config) (passSummary, error) {
+	var summary passSummary
+
 	if modRoot, ok := findModuleRoot(absRoot); ok {
 		if cfg.NilablePointersGoMod {
 			if changed, err := ensureNilablePointers(modRoot); err != nil {
 				fmt.Fprintf(os.Stderr, "%s: %v\n", filepath.Join(modRoot, "go.mod"), err)
 			} else if changed {
-				fmt.Println(filepath.Join(modRoot, "go.mod"))
-				changedFiles++
+				modPath := filepath.Join(modRoot, "go.mod")
+				fmt.Println(modPath)
+				summary.changedPaths = append(summary.changedPaths, modPath)
 			}
 		}
 		if cfg.NilablePointersGenDisable {
-			if n, err := disableNilablePointersOnGenFiles(absRoot); err != nil {
+			paths, err := disableNilablePointersOnGenFiles(absRoot)
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "gen files: %v\n", err)
-			} else if n > 0 {
-				fmt.Fprintf(os.Stderr, "marked %d *_gen.go files nilable_pointers disable\n", n)
+			} else if len(paths) > 0 {
+				fmt.Fprintf(os.Stderr, "marked %d *_gen.go files nilable_pointers disable\n", len(paths))
+				summary.changedPaths = append(summary.changedPaths, paths...)
 			}
 		}
 	}
 
 	pkgs, err := collectPackages(absRoot)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return summary, err
 	}
 
 	for _, pkg := range pkgs {
-		c, n, e := modernizePackage(pkg, cfg)
+		paths, n, e := modernizePackage(pkg, cfg)
 		if e != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", pkg.dir, e)
 			continue
 		}
-		changedFiles += c
-		callBangTotal += n.callBang
-		errBangTotal += n.errBang
-		nilableTotal += n.nilable
-		verifiedNonNilTotal += n.verifiedNonNil
-		fmtErrorfTotal += n.fmtErrorf
-		customErrTotal += n.customErr
+		summary.changedFiles += len(paths)
+		summary.changedPaths = append(summary.changedPaths, paths...)
+		summary.counts.callBang += n.callBang
+		summary.counts.errBang += n.errBang
+		summary.counts.nilable += n.nilable
+		summary.counts.verifiedNonNil += n.verifiedNonNil
+		summary.counts.fmtErrorf += n.fmtErrorf
+		summary.counts.customErr += n.customErr
+		summary.counts.shorthand += n.shorthand
 	}
-	fmt.Fprintf(os.Stderr, "modernized %d files (%d nilable, %d verified *T, %d call()!, %d err!, %d fmt.Errorf→errors.New, %d custom errors)\n",
-		changedFiles, nilableTotal, verifiedNonNilTotal, callBangTotal, errBangTotal, fmtErrorfTotal, customErrTotal)
+	return summary, nil
 }
 
 type pkgFiles struct {
@@ -119,15 +149,16 @@ type rewriteCounts struct {
 	verifiedNonNil int
 	fmtErrorf      int
 	customErr      int
+	shorthand      int
 }
 
-func modernizePackage(pkg pkgFiles, cfg Config) (changedFiles int, counts rewriteCounts, err error) {
+func modernizePackage(pkg pkgFiles, cfg Config) (changedPaths []string, counts rewriteCounts, err error) {
 	fset := token.NewFileSet()
 	files := make([]*ast.File, len(pkg.paths))
 	for i, path := range pkg.paths {
 		f, e := parser.ParseFile(fset, path, nil, parser.ParseComments)
 		if e != nil {
-			return 0, counts, e
+			return nil, counts, e
 		}
 		f.NilablePointersRegions = buildNilablePointersRegions(collectNilablePointersDirectives(f))
 		files[i] = f
@@ -148,19 +179,20 @@ func modernizePackage(pkg pkgFiles, cfg Config) (changedFiles int, counts rewrit
 			continue
 		}
 		if fileChanged {
-			changedFiles++
+			changedPaths = append(changedPaths, path)
 			fmt.Println(path)
 		}
 		counts.callBang += countsPart.callBang
 		counts.errBang += countsPart.errBang
 		counts.fmtErrorf += countsPart.fmtErrorf
 		counts.customErr += countsPart.customErr
+		counts.shorthand += countsPart.shorthand
 		if nilableChanged[i] && fileChanged {
 			counts.nilable++
 		}
 	}
 	counts.verifiedNonNil = verifiedNonNil
-	return changedFiles, counts, nil
+	return changedPaths, counts, nil
 }
 
 func modernizeParsedFile(fset *token.FileSet, f *ast.File, path string, forceWrite bool, pkgEmbed map[string]string, pkgExtraFields map[string][]string, cfg Config) (nilableChanged bool, counts rewriteCounts, changed bool, err error) {
@@ -191,6 +223,9 @@ func modernizeParsedFile(fset *token.FileSet, f *ast.File, path string, forceWri
 	}
 	if cfg.anyStructuredErrors() {
 		counts.fmtErrorf, counts.customErr = mod.modernizeStructuredErrors()
+	}
+	if cfg.ShorthandTypes {
+		counts.shorthand = mod.modernizeShorthandTypes()
 	}
 	counts.callBang = mod.callBangCount
 	counts.errBang = mod.errBangStmtCount
@@ -226,6 +261,14 @@ type fileModernizer struct {
 	changed        bool
 	callBangCount  int
 	errBangStmtCount int
+}
+
+func (m *fileModernizer) modernizeShorthandTypes() int {
+	n := modernizeShorthandTypes(m.file)
+	if n > 0 {
+		m.mark()
+	}
+	return n
 }
 
 func (m *fileModernizer) simplifyNilReturnsInFunc(fn *ast.FuncDecl) {

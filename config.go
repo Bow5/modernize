@@ -20,6 +20,8 @@ type Config struct {
 	ErrorsBasePositionalComposites   bool `json:"errors_base_positional_composites"`
 	ErrorsBaseMessageFieldRefs       bool `json:"errors_base_message_field_refs"`
 	ErrorsBaseUsages                 bool `json:"errors_base_usages"`
+	ShorthandTypes                   bool `json:"shorthand_types"`
+	StepCommits                      bool `json:"step_commits"`
 }
 
 func DefaultConfig() Config {
@@ -35,6 +37,8 @@ func DefaultConfig() Config {
 		ErrorsBasePositionalComposites:   true,
 		ErrorsBaseMessageFieldRefs:       true,
 		ErrorsBaseUsages:                 true,
+		ShorthandTypes:                   true,
+		StepCommits:                      true,
 	}
 }
 

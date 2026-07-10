@@ -30,7 +30,9 @@ Copy the template from the modernize repo:
   "errors_base_setmsg": true,
   "errors_base_positional_composites": true,
   "errors_base_message_field_refs": true,
-  "errors_base_usages": true
+  "errors_base_usages": true,
+  "shorthand_types": true,
+  "step_commits": true
 }
 ```
 
@@ -57,6 +59,28 @@ To disable only `errors.Base` embedding:
 | `errors_base_positional_composites` | `true` | Turn positional composites like `&Err{s}` into keyed literals for has-extra error types |
 | `errors_base_message_field_refs` | `true` | Rewrite `.msg` (etc.) field reads to `.Base.Message` after embed-only migration |
 | `errors_base_usages` | `true` | Rewrite constructions (`NewCustom`, constructor returns, assign/`var` composites) |
+| `shorthand_types` | `true` | Rewrite `type T struct` / `type I interface` to `struct T` / `interface I` |
+| `step_commits` | `true` | When the target is in a git or hg repo, run each pass separately and commit its changes (formatting first, then nilable pointers, `T!` / `!`, structured errors, shorthand) |
+
+## Step commits
+
+With `step_commits` enabled (default), modernize runs passes in [Bow README](https://github.com/Bow5/Bow) migration order and creates one VCS commit per pass when the target tree is inside a **git** or **hg** repository:
+
+1. `gofmt` formatting only
+2. Nilable pointers (`go.mod`, `*_gen.go` directives, `*T` / `*T?` annotations)
+3. `T!` / `!` error handling
+4. Structured errors (`errors.Base`, `fmt.Errorf` → `errors.New`, …)
+5. Struct and interface shorthand
+
+If no git/hg root is found, modernize runs all enabled passes in one go without committing.
+
+Disable step commits to restore the previous single-pass behavior:
+
+```json
+{
+  "step_commits": false
+}
+```
 
 ## Typical combinations
 
