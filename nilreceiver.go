@@ -379,6 +379,7 @@ func modernizeNilReceivers(f *ast.File, files []*ast.File, cfg Config, modIdx *m
 		chains += nilablePointerChains(f, files, returns, modIdx)
 		chains += nilableMethodGuards(f, files, returns, modIdx)
 		chains += coalesceOptionalStringFieldReads(f, files, returns, modIdx)
+		chains += coalesceOptionalBoolUnary(f, files)
 		chains += stripNonNilableCoalesce(f)
 		chains += rewriteIfNilableChainConditions(f, files, returns, modIdx)
 		chains += coalesceOptionalFieldsInCompositeLits(f, buildStructFieldIndex(files))
@@ -540,7 +541,11 @@ func buildFuncVars(fn *ast.FuncDecl, f *ast.File, returns *returnTypeIndex, modI
 					}
 				}
 				if typ := resolveExprType(returns, modIdx, f, structs, fn, vars, pkgVars, rhs); typ != nil {
-					vars[id.Name] = typ
+					if isStarDerefExpr(rhs) {
+						vars[id.Name] = unwrapAssignableType(typ)
+					} else {
+						vars[id.Name] = typ
+					}
 				}
 			}
 		case *ast.GenDecl:
@@ -685,7 +690,39 @@ func identComparedToNil(cond ast.Expr) (string, bool) {
 	if id, ok := ast.Unparen(be.Y).(*ast.Ident); ok && isNilExpr(be.X) {
 		return id.Name, true
 	}
+	if sel, ok := ast.Unparen(be.X).(*ast.SelectorExpr); ok && isNilExpr(be.Y) {
+		return selectorNarrowKey(sel), true
+	}
+	if sel, ok := ast.Unparen(be.Y).(*ast.SelectorExpr); ok && isNilExpr(be.X) {
+		return selectorNarrowKey(sel), true
+	}
 	return "", false
+}
+
+func selectorNarrowKey(sel *ast.SelectorExpr) string {
+	if sel == nil || sel.Sel == nil {
+		return ""
+	}
+	if id, ok := sel.X.(*ast.Ident); ok {
+		return id.Name + "." + sel.Sel.Name
+	}
+	return sel.Sel.Name
+}
+
+func isNarrowedExpr(expr ast.Expr, narrowed map[string]bool) bool {
+	if narrowed == nil {
+		return false
+	}
+	if id, ok := ast.Unparen(expr).(*ast.Ident); ok {
+		return narrowed[id.Name]
+	}
+	if sel, ok := ast.Unparen(expr).(*ast.SelectorExpr); ok {
+		if narrowed[selectorNarrowKey(sel)] {
+			return true
+		}
+		return isNarrowedExpr(sel.X, narrowed)
+	}
+	return false
 }
 
 func bodyOnlyExits(body *ast.BlockStmt) bool {
@@ -1040,6 +1077,9 @@ func processNilableSelector(sel *ast.SelectorExpr, returns *returnTypeIndex, mod
 	if root := selectorRootIdent(sel.X); root != "" && narrowed[root] {
 		return 0
 	}
+	if isNarrowedExpr(sel.X, narrowed) {
+		return 0
+	}
 	if !isNilablePointerType(receiverTypeForSelector(returns, modIdx, f, structs, fn, vars, pkgVars, sel)) {
 		return 0
 	}
@@ -1162,7 +1202,14 @@ func rewriteNilableMethodStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *r
 		}
 	case *ast.ExprStmt:
 		if stmts, n, skip, ok := nilableRootStmtGuard(fn, varIdx, f, s, narrowed, block, blockIdx); ok {
-			return stmts, n, skip
+			out := stmts
+			if guardHasReturn(stmts) {
+				if ret := defaultReturnStmt(fn); ret != nil {
+					out = append(out, ret)
+					n++
+				}
+			}
+			return out, n, skip
 		}
 		if guard, ok := nilableMethodGuardFromCall(fn, varIdx, returns, modIdx, f, s.X, narrowed); ok {
 			return []ast.Stmt{guard}, 1, 0
@@ -1172,7 +1219,14 @@ func rewriteNilableMethodStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *r
 		}
 	case *ast.AssignStmt:
 		if stmts, n, skip, ok := nilableRootStmtGuard(fn, varIdx, f, s, narrowed, block, blockIdx); ok {
-			return stmts, n, skip
+			out := stmts
+			if guardHasReturn(stmts) {
+				if ret := defaultReturnStmt(fn); ret != nil {
+					out = append(out, ret)
+					n++
+				}
+			}
+			return out, n, skip
 		}
 		if len(s.Lhs) == 1 {
 			if guard, ok := nilableFieldAssignGuard(fn, varIdx, returns, modIdx, f, s, narrowed); ok {
@@ -1235,6 +1289,9 @@ func nilableMethodGuardFromCall(fn *ast.FuncDecl, varIdx *funcVarIndex, returns 
 		return nil, false
 	}
 	vars := varIdx.byFunc[fn]
+	if isNarrowedExpr(sel.X, narrowed) {
+		return nil, false
+	}
 	if root := selectorRootIdent(sel.X); root != "" && narrowed[root] {
 		return nil, false
 	}
@@ -1464,7 +1521,7 @@ func nilableRootInStmt(stmt ast.Stmt, vars map[string]ast.Expr, pkgVars map[stri
 			return true
 		}
 		root := selectorRootIdent(sel.X)
-		if root == "" || narrowed[root] {
+		if root == "" || narrowed[root] || isNarrowedExpr(sel.X, narrowed) {
 			return true
 		}
 		if !isNilablePointerType(vars[root]) && !isNilablePointerType(pkgVars[root]) {
@@ -1558,6 +1615,9 @@ func nilableFieldAssignGuard(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *re
 		return nil, false
 	}
 	vars := varIdx.byFunc[fn]
+	if isNarrowedExpr(sel.X, narrowed) {
+		return nil, false
+	}
 	if root := selectorRootIdent(sel.X); root != "" && narrowed[root] {
 		return nil, false
 	}
@@ -1727,6 +1787,75 @@ func coalesceOptionalFieldsInCompositeLits(f *ast.File, structs *structFieldInde
 	return count
 }
 
+func isStarDerefExpr(rhs ast.Expr) bool {
+	_, ok := ast.Unparen(rhs).(*ast.StarExpr)
+	return ok
+}
+
+func unwrapAssignableType(t ast.Expr) ast.Expr {
+	t = ast.Unparen(t)
+	if ne, ok := t.(*ast.NilableTypeExpr); ok {
+		t = ast.Unparen(ne.X)
+	}
+	if star, ok := t.(*ast.StarExpr); ok {
+		return ast.Unparen(star.X)
+	}
+	return t
+}
+
+func guardHasReturn(stmts []ast.Stmt) bool {
+	for _, stmt := range stmts {
+		if guard, ok := stmt.(*ast.IfStmt); ok && guard.Body != nil {
+			if guardHasReturn(guard.Body.List) {
+				return true
+			}
+		}
+		if _, ok := stmt.(*ast.ReturnStmt); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func defaultReturnStmt(fn *ast.FuncDecl) ast.Stmt {
+	if fn == nil || fn.Type == nil || fn.Type.Results == nil {
+		return nil
+	}
+	flat := flattenAllResultTypes(fn.Type.Results)
+	if len(flat) == 0 {
+		return nil
+	}
+	results := make([]ast.Expr, len(flat))
+	for i, t := range flat {
+		results[i] = zeroExprForType(t)
+	}
+	return &ast.ReturnStmt{Results: results}
+}
+
+func zeroExprForType(t ast.Expr) ast.Expr {
+	t = ast.Unparen(t)
+	if _, ok := t.(*ast.NilableTypeExpr); ok {
+		return &ast.Ident{Name: "nil"}
+	}
+	if star, ok := t.(*ast.StarExpr); ok {
+		_ = star
+		return &ast.Ident{Name: "nil"}
+	}
+	if id, ok := t.(*ast.Ident); ok {
+		switch id.Name {
+		case "string":
+			return &ast.BasicLit{Kind: token.STRING, Value: `""`}
+		case "bool":
+			return &ast.Ident{Name: "false"}
+		case "error":
+			return &ast.Ident{Name: "nil"}
+		case "int", "int64", "uint64", "float64":
+			return &ast.BasicLit{Kind: token.INT, Value: "0"}
+		}
+	}
+	return &ast.Ident{Name: "nil"}
+}
+
 func localNamesFromStmt(stmt ast.Stmt) []string {
 	assign, ok := stmt.(*ast.AssignStmt)
 	if !ok {
@@ -1780,6 +1909,64 @@ func coalesceStringFieldsInNode(fn *ast.FuncDecl, varIdx *funcVarIndex, returns 
 		return true
 	})
 	return count
+}
+
+func coalesceOptionalBoolUnary(f *ast.File, files []*ast.File) int {
+	structs := buildStructFieldIndex(files)
+	count := 0
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		ast.Inspect(fn, func(n ast.Node) bool {
+			u, ok := n.(*ast.UnaryExpr)
+			if !ok || u.Op != token.NOT {
+				return true
+			}
+			sel, ok := ast.Unparen(u.X).(*ast.SelectorExpr)
+			if !ok || !alreadyNullCond(sel.X) {
+				return true
+			}
+			if !isBoolishType(fieldTypeFromOptionalSelectorExpr(structs, sel)) {
+				return true
+			}
+			u.X = &ast.BinaryExpr{
+				X:    sel,
+				Op:   token.NULLCOALESCE,
+				Y:    &ast.Ident{Name: "false"},
+			}
+			count++
+			return true
+		})
+	}
+	return count
+}
+
+func fieldTypeFromOptionalSelectorExpr(structs *structFieldIndex, sel *ast.SelectorExpr) ast.Expr {
+	if structs == nil || sel == nil || sel.Sel == nil {
+		return nil
+	}
+	if id, ok := sel.X.(*ast.NullCondExpr); ok {
+		if inner, ok := ast.Unparen(id.X).(*ast.Ident); ok {
+			return structs.fieldType(inner.Name, sel.Sel.Name)
+		}
+	}
+	return nil
+}
+
+func isBoolishType(t ast.Expr) bool {
+	if t == nil {
+		return false
+	}
+	t = ast.Unparen(t)
+	if ne, ok := t.(*ast.NilableTypeExpr); ok {
+		t = ast.Unparen(ne.X)
+	}
+	if id, ok := t.(*ast.Ident); ok {
+		return id.Name == "bool"
+	}
+	return false
 }
 
 func stripNonNilableCoalesce(f *ast.File) int {
