@@ -47,10 +47,10 @@ func (a *ptrAnnotator) analyze() {
 		a.scanNilEvidence(f)
 	}
 	a.markLookupResults()
-	a.propagateNilableFromCalleeReturns()
 	a.propagateNilableParamToAssignedFields()
 	a.dropNilableParamsUsedAsCallArgs()
 	a.dropNilableReassignedParams()
+	a.propagateNilableFromCalleeReturns()
 	a.finalizeNilableResults()
 }
 
@@ -536,16 +536,30 @@ func (a *ptrAnnotator) markAssignTargetNilable(lhs ast.Expr, owner string, fn *a
 	switch e := ast.Unparen(lhs).(type) {
 	case *ast.Ident:
 		key := ptrSiteKey{kind: "var", owner: owner, name: e.Name, index: -1}
-		if a.typeNode[key] == nil {
-			return false
-		}
-		if a.nilable[key] {
+		if a.typeNode[key] != nil {
+			if a.nilable[key] {
+				delete(a.strictResult, key)
+				return false
+			}
+			a.nilable[key] = true
 			delete(a.strictResult, key)
-			return false
+			return true
 		}
-		a.nilable[key] = true
-		delete(a.strictResult, key)
-		return true
+		if fn != nil && fn.Type != nil && fn.Type.Params != nil {
+			for _, tf := range flattenFields("param", fn.Name.Name, fn.Type.Params) {
+				if tf.key.name != e.Name {
+					continue
+				}
+				if a.nilable[tf.key] {
+					delete(a.strictResult, tf.key)
+					return false
+				}
+				a.nilable[tf.key] = true
+				delete(a.strictResult, tf.key)
+				return true
+			}
+		}
+		return false
 	case *ast.SelectorExpr:
 		field := e.Sel.Name
 		typeName := ""

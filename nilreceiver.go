@@ -234,16 +234,15 @@ func resolveCallResultType(idx *returnTypeIndex, call *ast.CallExpr) ast.Expr {
 	case *ast.Ident:
 		return idx.funcs[fun.Name]
 	case *ast.SelectorExpr:
-		if id, ok := fun.X.(*ast.Ident); ok && fun.Sel != nil {
-			if res, ok := idx.methods[methodKey{recv: id.Name, name: fun.Sel.Name}]; ok {
+		if fun.Sel == nil {
+			return nil
+		}
+		if recvType := resolveExprResultType(idx, fun.X); recvType != nil {
+			if res, ok := idx.methods[methodKey{recv: typeBaseName(recvType), name: fun.Sel.Name}]; ok {
 				return res
 			}
 		}
-		recvType := resolveExprResultType(idx, fun.X)
-		if recvType == nil || fun.Sel == nil {
-			return nil
-		}
-		return idx.methods[methodKey{recv: typeBaseName(recvType), name: fun.Sel.Name}]
+		return idx.funcs[fun.Sel.Name]
 	default:
 		return nil
 	}
@@ -336,11 +335,154 @@ func wrapNullCond(e ast.Expr) ast.Expr {
 
 func modernizeNilReceivers(f *ast.File, files []*ast.File, cfg Config) (guards, chains int) {
 	guardIdx := buildNilReceiverGuardIndex(files)
+	returns := buildReturnTypeIndex(files)
 	if cfg.OptionalMethodChains {
 		chains = optionalMethodChains(f, files, guardIdx)
+		chains += nilablePointerChains(f, files, returns)
 	}
 	if cfg.RemoveNilReceiverGuards {
 		guards = removeNilReceiverGuards(f)
 	}
 	return guards, chains
+}
+
+func isNilablePointerType(t ast.Expr) bool {
+	ne, ok := ast.Unparen(t).(*ast.NilableTypeExpr)
+	if !ok {
+		return false
+	}
+	_, ok = ast.Unparen(ne.X).(*ast.StarExpr)
+	return ok
+}
+
+type funcVarIndex struct {
+	byFunc map[*ast.FuncDecl]map[string]ast.Expr
+}
+
+func buildFuncVarIndex(files []*ast.File, returns *returnTypeIndex) *funcVarIndex {
+	idx := &funcVarIndex{byFunc: map[*ast.FuncDecl]map[string]ast.Expr{}}
+	for _, f := range files {
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			idx.byFunc[fn] = buildFuncVars(fn, returns)
+		}
+	}
+	return idx
+}
+
+func buildFuncVars(fn *ast.FuncDecl, returns *returnTypeIndex) map[string]ast.Expr {
+	vars := map[string]ast.Expr{}
+	if fn.Type != nil && fn.Type.Params != nil {
+		for _, tf := range flattenFields("param", fn.Name.Name, fn.Type.Params) {
+			if tf.key.name != "" {
+				vars[tf.key.name] = tf.typ
+			}
+		}
+	}
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		if _, ok := n.(*ast.FuncLit); ok {
+			return false
+		}
+		switch x := n.(type) {
+		case *ast.AssignStmt:
+			for i, lhs := range x.Lhs {
+				id, ok := ast.Unparen(lhs).(*ast.Ident)
+				if !ok {
+					continue
+				}
+				var rhs ast.Expr
+				if len(x.Rhs) == 1 {
+					rhs = x.Rhs[0]
+				} else {
+					rhs = rhsAt(x.Rhs, i)
+				}
+				if typ := resolveExprType(returns, vars, rhs); typ != nil {
+					vars[id.Name] = typ
+				}
+			}
+		case *ast.GenDecl:
+			if x.Tok != token.VAR {
+				return true
+			}
+			for _, spec := range x.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, name := range vs.Names {
+					if vs.Type != nil {
+						vars[name.Name] = vs.Type
+						continue
+					}
+					if i < len(vs.Values) {
+						if typ := resolveExprType(returns, vars, vs.Values[i]); typ != nil {
+							vars[name.Name] = typ
+						}
+					}
+				}
+			}
+		}
+		return true
+	})
+	return vars
+}
+
+func resolveExprType(returns *returnTypeIndex, vars map[string]ast.Expr, e ast.Expr) ast.Expr {
+	switch x := ast.Unparen(e).(type) {
+	case *ast.Ident:
+		return vars[x.Name]
+	case *ast.CallExpr:
+		return resolveCallResultType(returns, x)
+	case *ast.NullCondExpr:
+		return resolveExprType(returns, vars, x.X)
+	default:
+		return nil
+	}
+}
+
+func receiverTypeForSelector(returns *returnTypeIndex, vars map[string]ast.Expr, sel *ast.SelectorExpr) ast.Expr {
+	if sel == nil {
+		return nil
+	}
+	return resolveExprType(returns, vars, sel.X)
+}
+
+// nilablePointerChains adds ?. where the receiver expression has type *T?.
+func nilablePointerChains(f *ast.File, files []*ast.File, returns *returnTypeIndex) int {
+	varIdx := buildFuncVarIndex(files, returns)
+	count := 0
+	var curFunc *ast.FuncDecl
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.FuncDecl:
+			curFunc = x
+		case *ast.FuncLit:
+			return false
+		case *ast.SelectorExpr:
+			vars := map[string]ast.Expr{}
+			if curFunc != nil {
+				vars = varIdx.byFunc[curFunc]
+			}
+			count += processNilableSelector(x, returns, vars)
+		}
+		return true
+	})
+	return count
+}
+
+func processNilableSelector(sel *ast.SelectorExpr, returns *returnTypeIndex, vars map[string]ast.Expr) int {
+	if sel == nil || sel.Sel == nil {
+		return 0
+	}
+	if !isNilablePointerType(receiverTypeForSelector(returns, vars, sel)) {
+		return 0
+	}
+	if alreadyNullCond(sel.X) {
+		return 0
+	}
+	sel.X = wrapNullCond(sel.X)
+	return 1
 }

@@ -193,3 +193,74 @@ func f() *M {
 		t.Fatalf("rewrote %d chains, want 1 (MethodB only)", n)
 	}
 }
+
+func TestNilablePointerChainsOnCallResult(t *testing.T) {
+	const src = `package logger
+
+type ReqInfo struct{ BucketName string }
+
+func GetReqInfo() *ReqInfo {
+	return nil
+}
+
+func (r *ReqInfo) SetTags(k, v string) {}
+
+func Use() {
+	GetReqInfo().SetTags("k", "v")
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retFn := f.Decls[1].(*ast.FuncDecl)
+	retFn.Type.Results.List[0].Type = &ast.NilableTypeExpr{X: retFn.Type.Results.List[0].Type, QPos: retFn.Type.Results.List[0].Type.End()}
+
+	files := []*ast.File{f}
+	returns := buildReturnTypeIndex(files)
+	if n := nilablePointerChains(f, files, returns); n != 1 {
+		t.Fatalf("rewrote %d chains, want 1", n)
+	}
+	useFn := f.Decls[3].(*ast.FuncDecl)
+	call := useFn.Body.List[0].(*ast.ExprStmt).X.(*ast.CallExpr)
+	sel := call.Fun.(*ast.SelectorExpr)
+	if _, ok := sel.X.(*ast.NullCondExpr); !ok {
+		t.Fatalf("expected ?. on GetReqInfo result, got %T", sel.X)
+	}
+}
+
+func TestNilablePointerChainsOnLocalVar(t *testing.T) {
+	const src = `package p
+
+type ReqInfo struct{ BucketName string }
+
+func GetReqInfo() *ReqInfo {
+	return nil
+}
+
+func f() string {
+	reqInfo := GetReqInfo()
+	return reqInfo.BucketName
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retFn := f.Decls[1].(*ast.FuncDecl)
+	retFn.Type.Results.List[0].Type = &ast.NilableTypeExpr{X: retFn.Type.Results.List[0].Type, QPos: retFn.Type.Results.List[0].Type.End()}
+
+	files := []*ast.File{f}
+	returns := buildReturnTypeIndex(files)
+	if n := nilablePointerChains(f, files, returns); n != 1 {
+		t.Fatalf("rewrote %d chains, want 1", n)
+	}
+	fn := f.Decls[2].(*ast.FuncDecl)
+	ret := fn.Body.List[1].(*ast.ReturnStmt)
+	sel := ret.Results[0].(*ast.SelectorExpr)
+	if _, ok := sel.X.(*ast.NullCondExpr); !ok {
+		t.Fatalf("expected ?. on reqInfo, got %T", sel.X)
+	}
+}

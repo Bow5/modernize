@@ -319,3 +319,31 @@ func (r *Reader) read() {
 		t.Fatalf("expected field assigned from nilable callee to be nilable:\n%s", out)
 	}
 }
+
+func TestPtrAnnotatorPropagatesNilableToParam(t *testing.T) {
+	const src = `package p
+
+type HTTPRangeSpec struct{}
+
+func partNumberToRangeSpec(part int) *HTTPRangeSpec? {
+	return nil
+}
+
+func setHeaders(rs *HTTPRangeSpec) {
+	rs = partNumberToRangeSpec(1)
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, _ := applyPtrAnnotations(fset, []*ast.File{f})
+	if !changed[0] {
+		t.Fatal("expected pointer annotation changes")
+	}
+	out := formatTestFile(fset, f)
+	if !strings.Contains(out, "setHeaders(rs *HTTPRangeSpec?)") {
+		t.Fatalf("expected param reassigned from nilable callee to be nilable:\n%s", out)
+	}
+}
