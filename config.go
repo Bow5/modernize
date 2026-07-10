@@ -22,6 +22,8 @@ type Config struct {
 	ErrorsBaseUsages                 bool `json:"errors_base_usages"`
 	ShorthandTypes                   bool `json:"shorthand_types"`
 	StepCommits                      bool `json:"step_commits"`
+	RemoveNilReceiverGuards          bool `json:"remove_nil_receiver_guards"`
+	OptionalMethodChains             bool `json:"optional_method_chains"`
 }
 
 func DefaultConfig() Config {
@@ -39,6 +41,8 @@ func DefaultConfig() Config {
 		ErrorsBaseUsages:                 true,
 		ShorthandTypes:                   true,
 		StepCommits:                      true,
+		RemoveNilReceiverGuards:          true,
+		OptionalMethodChains:             true,
 	}
 }
 

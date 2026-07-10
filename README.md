@@ -82,6 +82,10 @@ type Stringer interface { String() string }  →  interface Stringer { String() 
 
 Skips parenthesized `type ( … )` groups, type aliases, generics, and non-struct/interface types. Also rewrites local `type` declarations inside function bodies.
 
+### Nil receivers
+
+Removes unreachable `if recv == nil { … }` guards in pointer-receiver methods when [nil_receiver_panic](https://github.com/Bow5/Bow/blob/master/doc/new_features/nil_receivers.md) is enabled. Adds `?.` on call chains only when the callee had such a guard (equivalent short-circuit), never merely because a return type is nullable.
+
 ### Structured errors (`errors.Base`)
 
 **`fmt.Errorf` → `errors.New`** when the format string is a literal with no `%w` (no error chaining):

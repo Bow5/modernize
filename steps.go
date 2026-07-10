@@ -37,13 +37,16 @@ var modernizeSteps = []modernizeStep{
 		name:      "nilable_pointers",
 		commitMsg: "modernize: nilable pointer annotations",
 		enabled: func(c Config) bool {
-			return c.NilablePointersGoMod || c.NilablePointersGenDisable || c.NilablePointersAnnotate
+			return c.NilablePointersGoMod || c.NilablePointersGenDisable || c.NilablePointersAnnotate ||
+				c.RemoveNilReceiverGuards || c.OptionalMethodChains
 		},
 		stepConfig: func(base Config) Config {
 			return Config{
 				NilablePointersGoMod:      base.NilablePointersGoMod,
 				NilablePointersGenDisable: base.NilablePointersGenDisable,
 				NilablePointersAnnotate:   base.NilablePointersAnnotate,
+				RemoveNilReceiverGuards:   base.RemoveNilReceiverGuards,
+				OptionalMethodChains:      base.OptionalMethodChains,
 			}
 		},
 	},

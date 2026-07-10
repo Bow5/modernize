@@ -12,7 +12,7 @@ func TestDefaultConfigAllTrue(t *testing.T) {
 		!cfg.ErrBangBody || !cfg.FmtErrorfToErrorsNew || !cfg.ErrorsBaseEmbed ||
 		!cfg.ErrorsBaseSetMsg || !cfg.ErrorsBasePositionalComposites ||
 		!cfg.ErrorsBaseMessageFieldRefs || !cfg.ErrorsBaseUsages || !cfg.ShorthandTypes ||
-		!cfg.StepCommits {
+		!cfg.StepCommits || !cfg.RemoveNilReceiverGuards || !cfg.OptionalMethodChains {
 		t.Fatalf("expected all defaults true: %+v", cfg)
 	}
 }

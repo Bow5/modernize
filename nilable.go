@@ -649,9 +649,6 @@ func applyPtrAnnotations(fset *token.FileSet, files []*ast.File) (changed []bool
 		if fixNilReturnsForStrictPointerResults(f, ann) {
 			fileChanged = true
 		}
-		if fixNilReceiverReturnsInMethods(f, ann) {
-			fileChanged = true
-		}
 		if splitNilOrReturnGuards(f, ann) {
 			fileChanged = true
 		}
@@ -1129,49 +1126,6 @@ func zeroPointerExpr(typ ast.Expr) ast.Expr {
 		return &ast.Ident{Name: "nil"}
 	}
 	return &ast.CallExpr{Fun: &ast.Ident{Name: "new"}, Args: []ast.Expr{star.X}}
-}
-
-func fixNilReceiverReturnsInMethods(f *ast.File, ann *ptrAnnotator) bool {
-	changed := false
-	for _, decl := range f.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || ann.isPackageFunc(fn) || fn.Recv == nil || fn.Type == nil || fn.Type.Results == nil || fn.Body == nil {
-			continue
-		}
-		flat := flattenFields("result", fn.Name.Name, fn.Type.Results)
-		if len(flat) != 1 || plainStarType(flat[0].typ) == nil || ann.nilable[flat[0].key] {
-			continue
-		}
-		recvName := fn.Recv.List[0].Names[0].Name
-		ast.Inspect(fn.Body, func(n ast.Node) bool {
-			ifs, ok := n.(*ast.IfStmt)
-			if !ok || ifs.Init != nil || ifs.Else != nil {
-				return true
-			}
-			cond, ok := ifs.Cond.(*ast.BinaryExpr)
-			if !ok || cond.Op != token.EQL {
-				return true
-			}
-			id, ok := cond.X.(*ast.Ident)
-			if !ok || id.Name != recvName || !isNilExpr(cond.Y) {
-				return true
-			}
-			if len(ifs.Body.List) != 1 {
-				return true
-			}
-			ret, ok := ifs.Body.List[0].(*ast.ReturnStmt)
-			if !ok || len(ret.Results) != 1 || !isNilExpr(ret.Results[0]) {
-				return true
-			}
-			ret.Results[0] = &ast.CallExpr{
-				Fun:  &ast.Ident{Name: "panic"},
-				Args: []ast.Expr{&ast.BasicLit{Kind: token.STRING, Value: `"nil receiver"`}},
-			}
-			changed = true
-			return true
-		})
-	}
-	return changed
 }
 
 func splitNilOrReturnGuards(f *ast.File, ann *ptrAnnotator) bool {

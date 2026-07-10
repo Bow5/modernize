@@ -11,5 +11,7 @@
   "errors_base_message_field_refs": true,
   "errors_base_usages": true,
   "shorthand_types": true,
-  "step_commits": true
+  "step_commits": true,
+  "remove_nil_receiver_guards": true,
+  "optional_method_chains": true
 }
