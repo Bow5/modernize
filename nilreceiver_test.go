@@ -227,6 +227,36 @@ func Use() {
 	}
 }
 
+func TestRangeMethodGuardOnRecvField(t *testing.T) {
+	const src = `package p
+
+type Client struct{}
+func (c *Client) Alive() <-chan int { return nil }
+
+type Sys struct {
+	hc *Client
+}
+
+func (sys *Sys) beat() {
+	for range sys.hc.Alive() {
+	}
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := f.Decls[2].(*ast.GenDecl).Specs[0].(*ast.TypeSpec).Type.(*ast.StructType).Fields.List[0]
+	st.Type = &ast.NilableTypeExpr{X: st.Type, QPos: st.Type.End()}
+
+	files := []*ast.File{f}
+	returns := buildReturnTypeIndex(files)
+	if n := nilableMethodGuards(f, files, returns, nil); n != 1 {
+		t.Fatalf("nilableMethodGuards rewrote %d, want 1 for range", n)
+	}
+}
+
 func TestNilablePointerChainsOnLocalVar(t *testing.T) {
 	const src = `package p
 

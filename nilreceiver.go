@@ -797,6 +797,14 @@ func nilableChainsInStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *return
 			count += nilableChainsInBlock(fn, varIdx, returns, modIdx, f, s.Body.List, copyBoolMap(narrowed))
 		}
 		return count
+	case *ast.SelectStmt:
+		count := 0
+		for _, comm := range s.Body.List {
+			if clause, ok := comm.(*ast.CommClause); ok && clause.Body != nil {
+				count += nilableChainsInBlock(fn, varIdx, returns, modIdx, f, clause.Body, copyBoolMap(narrowed))
+			}
+		}
+		return count
 	}
 	return nilableChainsInNode(fn, varIdx, returns, modIdx, f, stmt, narrowed)
 }
@@ -1004,6 +1012,16 @@ func rewriteNilableMethodStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *r
 				return []ast.Stmt{guard}, 1
 			}
 		}
+	case *ast.SelectStmt:
+		count := 0
+		for _, comm := range s.Body.List {
+			if clause, ok := comm.(*ast.CommClause); ok && clause.Body != nil {
+				list, n := rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, clause.Body, copyBoolMap(narrowed), 0)
+				clause.Body = list
+				count += n
+			}
+		}
+		return []ast.Stmt{s}, count
 	}
 	return []ast.Stmt{stmt}, 0
 }
