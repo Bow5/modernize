@@ -6,6 +6,8 @@ It walks a module or directory of Go files and rewrites them in place. Files are
 
 See **[docs/examples.md](docs/examples.md)** for a full before/after catalog, including what reference rewrites are *not* performed.
 
+See **[docs/config.md](docs/config.md)** to enable or disable individual rewrite passes via `modernize.json`.
+
 ## What it changes
 
 ### Nilable pointers
@@ -109,6 +111,9 @@ go build -o modernize .
 
 # default root is "."; pass a path to scan another tree
 ./modernize ./path/to/module
+
+# optional: per-target config at ./path/to/module/modernize.json
+# or MODERNIZE_CONFIG=/path/to/modernize.json
 ```
 
 Each modified file path is printed; a summary count is written to stderr.

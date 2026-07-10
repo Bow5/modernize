@@ -415,3 +415,243 @@ func lockedOpen(path string) (*os.File, error) {
 		t.Fatalf("expected to keep err binding:\n%s", out)
 	}
 }
+
+func TestModernizeErrBangInSwitchCase(t *testing.T) {
+	const src = `package p
+
+import "errors"
+
+func helper(s string) ([]string, error) {
+	if s == "" {
+		return nil, errEmpty
+	}
+	return []string{s}, nil
+}
+
+var errEmpty = errors.New("empty")
+
+func Load(raw string) (*Item, error) {
+	switch {
+	case raw != "":
+		parts, err := helper(raw)
+		if err != nil {
+			return nil, err
+		}
+		return &Item{parts: parts}, nil
+	default:
+		return nil, errEmpty
+	}
+}
+
+type Item struct{ parts []string }
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, changed, err := modernizeParsedFile(fset, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected changes")
+	}
+	out := formatTestFile(fset, f)
+	if strings.Contains(out, "parts, err := helper") {
+		t.Fatalf("expected helper()! in switch case:\n%s", out)
+	}
+	if !strings.Contains(out, "helper(raw)!") {
+		t.Fatalf("missing helper()! call:\n%s", out)
+	}
+}
+
+func TestModernizeErrBangErrorsNewReturn(t *testing.T) {
+	const src = `package p
+
+import (
+	"errors"
+	"strings"
+)
+
+func parse(endpoint string) (string, error) {
+	return endpoint, nil
+}
+
+func expand(s string) ([]string, error) {
+	var endpoints []string
+	for endpoint := range strings.SplitSeq(s, ",") {
+		pattern, err := parse(endpoint)
+		if err != nil {
+			return nil, errors.New("invalid endpoint '%s': %v", endpoint, err)
+		}
+		endpoints = append(endpoints, pattern)
+	}
+	return endpoints, nil
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, changed, err := modernizeParsedFile(fset, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected changes")
+	}
+	out := formatTestFile(fset, f)
+	if !strings.Contains(out, "func expand(s string) ([]string, error)") {
+		t.Fatalf("expected expand to keep (T, error) with range-over-Seq loop:\n%s", out)
+	}
+	if strings.Contains(out, "[]string!") {
+		t.Fatalf("should not convert expand to T! inside SplitSeq loop:\n%s", out)
+	}
+}
+func TestModernizeErrBangSequentialErrChecks(t *testing.T) {
+	const src = `package p
+
+func helper(s string) ([]string, error) {
+	return []string{s}, nil
+}
+
+func other() (int, error) {
+	return 1, nil
+}
+
+func Load(raw string) (*Item, error) {
+	parts, err := helper(raw)
+	if err != nil {
+		return nil, err
+	}
+	n, err := other()
+	if err != nil {
+		return nil, err
+	}
+	return &Item{parts: parts, n: n}, nil
+}
+
+type Item struct {
+	parts []string
+	n     int
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, changed, err := modernizeParsedFile(fset, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected changes")
+	}
+	out := formatTestFile(fset, f)
+	if strings.Contains(out, "parts, err := helper") || strings.Contains(out, "n, err := other") {
+		t.Fatalf("expected bang calls for sequential err checks:\n%s", out)
+	}
+	if !strings.Contains(out, "helper(raw)!") || !strings.Contains(out, "other()!") {
+		t.Fatalf("missing bang calls:\n%s", out)
+	}
+}
+
+func TestModernizeSetMsgGenericFactory(t *testing.T) {
+	const src = `package config
+
+import "fmt"
+
+type ErrorConfig interface {
+	ErrConfigGeneric
+}
+
+type ErrConfigGeneric struct {
+	msg string
+}
+
+func (ge *ErrConfigGeneric) setMsg(msg string) {
+	ge.msg = msg
+}
+
+func (ge ErrConfigGeneric) Error() string {
+	return ge.msg
+}
+
+func Error[T ErrorConfig, PT interface {
+	*T
+	setMsg(string)
+}](format string, vals ...any) T {
+	pt := PT(new(T))
+	pt.setMsg(fmt.Sprintf(format, vals...))
+	return *pt
+}
+
+func Errorf(format string, vals ...any) ErrConfigGeneric {
+	return Error[ErrConfigGeneric](format, vals...)
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "config.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, err = modernizeParsedFile(fset, f, filepath.Join(t.TempDir(), "config.go"), false, nil, nil, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := formatTestFile(fset, f)
+	if strings.Contains(out, "errors.Base") {
+		t.Fatalf("should skip Base embed when generic setMsg factory is present:\n%s", out)
+	}
+	if !strings.Contains(out, "pt.setMsg") {
+		t.Fatalf("Error factory should be unchanged:\n%s", out)
+	}
+}
+
+func TestModernizeErrBangSkipsParamShadow(t *testing.T) {
+	const src = `package p
+
+type Key struct {
+	Plaintext []byte
+}
+
+type KMS struct{}
+
+func (k *KMS) GenerateKey() (Key, error) {
+	return Key{}, nil
+}
+
+var GlobalKMS *KMS
+
+func newEncrypt(key []byte) error {
+	key, err := GlobalKMS.GenerateKey()
+	if err != nil {
+		return err
+	}
+	_ = key.Plaintext
+	return nil
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, changed, err := modernizeParsedFile(fset, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected changes")
+	}
+	out := formatTestFile(fset, f)
+	if strings.Contains(out, "GenerateKey()!") {
+		t.Fatalf("should not bang when LHS shadows param:\n%s", out)
+	}
+	if !strings.Contains(out, "key, err := GlobalKMS.GenerateKey()") {
+		t.Fatalf("expected original assign:\n%s", out)
+	}
+}

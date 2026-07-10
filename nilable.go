@@ -47,6 +47,9 @@ func (a *ptrAnnotator) analyze() {
 		a.scanNilEvidence(f)
 	}
 	a.markLookupResults()
+	a.propagateNilableParamToAssignedFields()
+	a.dropNilableParamsUsedAsCallArgs()
+	a.dropNilableReassignedParams()
 	a.finalizeNilableResults()
 }
 
@@ -59,11 +62,30 @@ func boolPairResults(fields *ast.FieldList) bool {
 	return ok && id.Name == "bool"
 }
 
+func stdErrPairResults(fields *ast.FieldList) bool {
+	if fields == nil || len(fields.List) != 2 {
+		return false
+	}
+	return isErrorType(fields.List[1].Type)
+}
+
+func errLastResult(fields *ast.FieldList) bool {
+	if fields == nil || len(fields.List) == 0 {
+		return false
+	}
+	return isErrorType(fields.List[len(fields.List)-1].Type)
+}
+
 func (a *ptrAnnotator) markLookupResults() {
 	for _, f := range a.files {
 		for _, decl := range f.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || !a.isLookupResult(fn) || fn.Type == nil || fn.Type.Results == nil || boolPairResults(fn.Type.Results) {
+				continue
+			}
+			// Only annotate lookup results for (T, error) or a single pointer result.
+			// Multi-value returns like (T, []string, error) keep strict pointer types at call sites.
+			if !stdErrPairResults(fn.Type.Results) && len(fn.Type.Results.List) != 1 {
 				continue
 			}
 			flat := flattenFields("result", fn.Name.Name, fn.Type.Results)
@@ -291,18 +313,26 @@ func (a *ptrAnnotator) scanNilEvidence(f *ast.File) {
 }
 
 func (a *ptrAnnotator) scanAssign(as *ast.AssignStmt, fn *ast.FuncDecl) {
+	owner := ""
+	if fn != nil {
+		owner = fn.Name.Name
+	}
 	for i, lhs := range as.Lhs {
-		if !isNilExpr(rhsAt(as.Rhs, i)) {
+		rhs := rhsAt(as.Rhs, i)
+		if isNilExpr(rhs) {
+			switch e := ast.Unparen(lhs).(type) {
+			case *ast.Ident:
+				a.markVarNilable(fn, e.Name)
+			case *ast.SelectorExpr:
+				if typeName, field, ok := selectorField(e); ok {
+					key := ptrSiteKey{kind: "field", owner: typeName, name: field, index: -1}
+					a.nilable[key] = true
+				}
+			}
 			continue
 		}
-		switch e := ast.Unparen(lhs).(type) {
-		case *ast.Ident:
-			a.markVarNilable(fn, e.Name)
-		case *ast.SelectorExpr:
-			if typeName, field, ok := selectorField(e); ok {
-				key := ptrSiteKey{kind: "field", owner: typeName, name: field, index: -1}
-				a.nilable[key] = true
-			}
+		if id, ok := ast.Unparen(lhs).(*ast.Ident); ok {
+			a.strictResult[ptrSiteKey{kind: "var", owner: owner, name: id.Name, index: -1}] = true
 		}
 	}
 }
@@ -351,6 +381,11 @@ func (a *ptrAnnotator) scanReturn(ret *ast.ReturnStmt, fn *ast.FuncDecl) {
 		}
 		// return nil, ... in multi-value returns is almost always an error path zero value.
 		if i == 0 && isNilExpr(expr) {
+			continue
+		}
+		// Only nilable-annotate non-error slots when the last result is error.
+		// Pairs like (T, *RemoteErr) must keep strict signatures for callbacks.
+		if !errLastResult(fn.Type.Results) {
 			continue
 		}
 		a.nilable[flat[i].key] = true
@@ -445,6 +480,132 @@ func compositeLitTypeName(lit *ast.CompositeLit) string {
 		return ""
 	}
 	return ""
+}
+
+func (a *ptrAnnotator) propagateNilableParamToAssignedFields() {
+	for _, f := range a.files {
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv == nil || fn.Type == nil || fn.Body == nil {
+				continue
+			}
+			recvName, recvTypeName, ok := recvNameAndType(fn.Recv)
+			if !ok || recvTypeName == "" {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				assign, ok := n.(*ast.AssignStmt)
+				if !ok || assign.Tok != token.ASSIGN {
+					return true
+				}
+				for i, lhs := range assign.Lhs {
+					sel, ok := lhs.(*ast.SelectorExpr)
+					if !ok {
+						continue
+					}
+					recv, ok := sel.X.(*ast.Ident)
+					if !ok || recv.Name != recvName {
+						continue
+					}
+					rhs := rhsAt(assign.Rhs, i)
+					id, ok := ast.Unparen(rhs).(*ast.Ident)
+					if !ok {
+						continue
+					}
+					for _, tf := range flattenFields("param", fn.Name.Name, fn.Type.Params) {
+						if tf.key.name != id.Name || !a.nilable[tf.key] {
+							continue
+						}
+						fieldKey := ptrSiteKey{kind: "field", owner: recvTypeName, name: sel.Sel.Name, index: -1}
+						a.nilable[fieldKey] = true
+					}
+				}
+				return true
+			})
+		}
+	}
+}
+
+func (a *ptrAnnotator) dropNilableReassignedParams() {
+	for _, f := range a.files {
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Type == nil || fn.Type.Params == nil || fn.Body == nil {
+				continue
+			}
+			paramKeys := make(map[string]ptrSiteKey)
+			for _, tf := range flattenFields("param", fn.Name.Name, fn.Type.Params) {
+				if tf.key.name == "" || !a.nilable[tf.key] {
+					continue
+				}
+				paramKeys[tf.key.name] = tf.key
+			}
+			if len(paramKeys) == 0 {
+				continue
+			}
+			reassigned := make(map[string]bool)
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				assign, ok := n.(*ast.AssignStmt)
+				if !ok || assign.Tok != token.ASSIGN {
+					return true
+				}
+				for _, lhs := range assign.Lhs {
+					id, ok := lhs.(*ast.Ident)
+					if !ok {
+						continue
+					}
+					if _, ok := paramKeys[id.Name]; ok {
+						reassigned[id.Name] = true
+					}
+				}
+				return true
+			})
+			for name := range reassigned {
+				delete(a.nilable, paramKeys[name])
+			}
+		}
+	}
+}
+
+func (a *ptrAnnotator) dropNilableParamsUsedAsCallArgs() {
+	for _, f := range a.files {
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Type == nil || fn.Type.Params == nil || fn.Body == nil {
+				continue
+			}
+			nilableParams := make(map[string]ptrSiteKey)
+			for _, tf := range flattenFields("param", fn.Name.Name, fn.Type.Params) {
+				if tf.key.name == "" || !a.nilable[tf.key] {
+					continue
+				}
+				nilableParams[tf.key.name] = tf.key
+			}
+			if len(nilableParams) == 0 {
+				continue
+			}
+			usedInCall := make(map[string]bool)
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				for _, arg := range call.Args {
+					id, ok := ast.Unparen(arg).(*ast.Ident)
+					if !ok {
+						continue
+					}
+					if _, ok := nilableParams[id.Name]; ok {
+						usedInCall[id.Name] = true
+					}
+				}
+				return true
+			})
+			for name := range usedInCall {
+				delete(a.nilable, nilableParams[name])
+			}
+		}
+	}
 }
 
 func selectorField(sel *ast.SelectorExpr) (typeName, field string, ok bool) {
@@ -1082,6 +1243,9 @@ func fixFindPassthroughReturns(f *ast.File, ann *ptrAnnotator) bool {
 	for _, decl := range f.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Type == nil || fn.Type.Results == nil || fn.Body == nil || boolPairResults(fn.Type.Results) {
+			continue
+		}
+		if len(fn.Type.Results.List) != 1 {
 			continue
 		}
 		flat := flattenFields("result", fn.Name.Name, fn.Type.Results)

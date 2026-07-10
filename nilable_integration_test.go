@@ -82,3 +82,125 @@ func Call() {
 		t.Fatalf("Must should keep strict pointers:\n%s", out)
 	}
 }
+
+func TestPtrAnnotatorLookupTripleReturnStrict(t *testing.T) {
+	const src = `package p
+
+type Result struct{}
+
+func (c *Config) LookupUserDN(username string) (*Result, []string, error) {
+	return nil, nil, errX
+}
+
+type Config struct{}
+var errX error
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ann := newPtrAnnotator(fset, []*ast.File{f})
+	ann.analyze()
+	key := ptrSiteKey{kind: "result", owner: "LookupUserDN", index: 0}
+	if ann.nilable[key] {
+		t.Fatalf("triple-return lookup should keep strict pointer result")
+	}
+	rewriteFilePointerTypes(fset, f, ann)
+	out := formatTestFile(fset, f)
+	if strings.Contains(out, "*Result?") {
+		t.Fatalf("expected strict pointer:\n%s", out)
+	}
+}
+
+func TestPtrAnnotatorSyncsFieldFromNilableParam(t *testing.T) {
+	const src = `package p
+
+type Cycle struct{}
+
+type Metrics struct {
+	cycle *Cycle
+}
+
+func (p *Metrics) setCycle(c *Cycle) {
+	p.cycle = c
+}
+
+func use(m *Metrics) {
+	m.setCycle(nil)
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ann := newPtrAnnotator(fset, []*ast.File{f})
+	ann.analyze()
+	fieldKey := ptrSiteKey{kind: "field", owner: "Metrics", name: "cycle", index: -1}
+	if !ann.nilable[fieldKey] {
+		t.Fatal("field assigned from nilable param should be nilable")
+	}
+	rewriteFilePointerTypes(fset, f, ann)
+	out := formatTestFile(fset, f)
+	if !strings.Contains(out, "cycle *Cycle?") {
+		t.Fatalf("expected nilable field:\n%s", out)
+	}
+}
+
+func TestPtrAnnotatorVarStrictWhenAlsoAssigned(t *testing.T) {
+	const src = `package p
+
+type Policy struct {
+	Version string
+}
+
+func Parse() (*Policy, error) {
+	return &Policy{}, nil
+}
+
+func f() {
+	var sp *Policy
+	sp, err := Parse()
+	if err != nil {
+		return
+	}
+	_ = sp.Version
+	sp = nil
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ann := newPtrAnnotator(fset, []*ast.File{f})
+	ann.analyze()
+	key := ptrSiteKey{kind: "var", owner: "f", name: "sp", index: -1}
+	if ann.nilable[key] {
+		t.Fatal("var assigned non-nil should stay strict")
+	}
+}
+
+func TestPtrAnnotatorNonErrorPairStrict(t *testing.T) {
+	const src = `package p
+
+type RemoteErr struct{}
+type Config struct{}
+
+func Verify() (*Config, *RemoteErr) {
+	return &Config{}, nil
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ann := newPtrAnnotator(fset, []*ast.File{f})
+	ann.analyze()
+	key := ptrSiteKey{kind: "result", owner: "Verify", index: 1}
+	if ann.nilable[key] {
+		t.Fatalf("non-error pair should keep strict second result")
+	}
+}

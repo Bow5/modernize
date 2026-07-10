@@ -8,15 +8,17 @@ Run with Bow as `GOROOT`. Output uses fork-only syntax (`T!`, `expr!`, `*T?`).
 
 ## Summary
 
-| Category | Active in default run? |
-|----------|------------------------|
-| `go.mod` `nilable_pointers enable` | Yes |
-| `*_gen.go` nilable disable directive | Yes |
-| Nilable pointer type inference (`*T` / `*T?`) | **No** (disabled in package loop; too aggressive for large trees) |
-| `err!` propagation / error-return cleanup | Yes (on functions that already use `T!` or return `error`) |
-| `(T, error)` → `T!` signature conversion | Yes (function and interface methods; rewrites bodies via `modernizeBody`) |
-| `fmt.Errorf` → `errors.New` | Yes |
-| Custom errors → `errors.Base` | Yes |
+| Category | Config flag | Active by default? |
+|----------|-------------|----------------------|
+| `go.mod` `nilable_pointers enable` | `nilable_pointers_go_mod` | Yes |
+| `*_gen.go` nilable disable directive | `nilable_pointers_gen_disable` | Yes |
+| Nilable pointer type inference (`*T` / `*T?`) | `nilable_pointers_annotate` | Yes |
+| `err!` propagation / error-return cleanup | `err_bang_body` | Yes |
+| `(T, error)` → `T!` signature conversion | `err_bang_signatures` | Yes |
+| `fmt.Errorf` → `errors.New` | `fmt_errorf_to_errors_new` | Yes |
+| Custom errors → `errors.Base` | `errors_base_embed` (+ related flags) | Yes |
+
+See **[config.md](config.md)** for the full flag list and how to disable individual passes.
 
 ---
 
@@ -71,9 +73,12 @@ type Gen struct {
 
 ## 2. Nilable pointers (`*T` / `*T?`)
 
-> **Note:** Per-site pointer annotation is implemented but **not run** in the default package loop (`modernize/main.go` leaves `applyPtrAnnotations` disabled). The examples below show what the nilable pass *would* do when enabled (e.g. via `modernizeFile` / future opt-in).
+Controlled by `nilable_pointers_annotate` (default **on**). When enabled, modernize rewrites pointer types in source:
 
-When enabled, pointers become `*T?` if nil can flow in (nil assignment, `return nil`, nil arguments, `var p *T` zero-init, `json:",omitempty"` fields). Otherwise they stay strict `*T`.
+- `*T?` when nil can flow in (nil assignment, `return nil`, nil arguments, lookup helpers that may return nil)
+- `*T` (strict) when no nil evidence is found, or when mixed non-nil returns dominate
+
+`nilable_pointers_go_mod` and `nilable_pointers_gen_disable` run separately (module + generated-file setup).
 
 **Before**
 
@@ -539,10 +544,4 @@ Inline `return` expressions used as sub-expressions, struct literals in assignme
    - Unused `fmt` imports remain (modernize does not prune imports)
 3. Fix remaining sites by hand, or extend modernize (see gaps above).
 
----
-
-## 7. Dead / unwired code (not in default run)
-
-These exist in the repo but are **not** called from `modernizePackage` today:
-
-- **`applyPtrAnnotations`** — package-wide `*T` / `*T?` inference
+See **[config.md](config.md)** to turn off passes you do not want (e.g. `"errors_base_embed": false`).

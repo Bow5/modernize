@@ -62,6 +62,7 @@ func (m *fileModernizer) modernizeStructuredErrors() (fmtErrorf, customErrors in
 }
 
 func (em *errorsModernizer) collectCustomErrorTypes() {
+	skipEmbed := em.fileHasSetMsgFactory()
 	for _, decl := range em.file.Decls {
 		gen, ok := decl.(*ast.GenDecl)
 		if !ok || gen.Tok != token.TYPE {
@@ -92,6 +93,9 @@ func (em *errorsModernizer) collectCustomErrorTypes() {
 				method:     errMethod,
 			}
 			em.classifyCustomError(info)
+			if skipEmbed && info.setMsgMethod != nil {
+				continue
+			}
 			em.types[ts.Name.Name] = info
 		}
 	}
@@ -277,8 +281,65 @@ func (em *errorsModernizer) rewriteCustomErrorTypes() int {
 	}
 	if em.cfg.ErrorsBaseSetMsg {
 		count += em.rewriteSetMsgFactories()
+		count += em.rewriteErrorfWrappers()
 	}
 	return count
+}
+
+func (em *errorsModernizer) rewriteErrorfWrappers() int {
+	count := 0
+	for _, decl := range em.file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Type == nil || fn.Type.Results == nil || len(fn.Type.Results.List) != 1 || fn.Body == nil {
+			continue
+		}
+		if fn.Type.Params == nil || len(fn.Type.Params.List) < 2 {
+			continue
+		}
+		retIdent, ok := fn.Type.Results.List[0].Type.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		info, ok := em.types[retIdent.Name]
+		if !ok || !info.embedOnly {
+			continue
+		}
+		formatName := "format"
+		valsName := "vals"
+		if len(fn.Type.Params.List[0].Names) > 0 {
+			formatName = fn.Type.Params.List[0].Names[0].Name
+		}
+		if len(fn.Type.Params.List[1].Names) > 0 {
+			valsName = fn.Type.Params.List[1].Names[0].Name
+		}
+		fn.Type.Results.List[0].Type = &ast.Ident{Name: "error"}
+		fn.Body.List = []ast.Stmt{&ast.ReturnStmt{Results: []ast.Expr{&ast.CallExpr{
+			Fun: &ast.IndexExpr{
+				X: &ast.SelectorExpr{
+					X:   &ast.Ident{Name: "errors"},
+					Sel: &ast.Ident{Name: "NewCustom"},
+				},
+				Index: &ast.Ident{Name: retIdent.Name},
+			},
+			Args: []ast.Expr{
+				&ast.Ident{Name: formatName},
+				&ast.Ident{Name: valsName},
+			},
+		}}}}
+		em.mark()
+		em.ensureImport("errors")
+		count++
+	}
+	return count
+}
+
+func (em *errorsModernizer) fileHasSetMsgFactory() bool {
+	for _, decl := range em.file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && funcUsesSetMsgConstraint(fn) {
+			return true
+		}
+	}
+	return false
 }
 
 func (em *errorsModernizer) rewriteEmbedOnlyType(info *customErrorType) int {
@@ -346,18 +407,32 @@ func (em *errorsModernizer) rewriteSetMsgFactories() int {
 }
 
 func funcUsesSetMsgConstraint(fn *ast.FuncDecl) bool {
-	if fn.Type.Params == nil {
+	if fn.Type == nil {
 		return false
 	}
-	for _, f := range fn.Type.Params.List {
-		if iface, ok := f.Type.(*ast.InterfaceType); ok && iface.Methods != nil {
-			for _, m := range iface.Methods.List {
-				if ft, ok := m.Type.(*ast.FuncType); ok && len(ft.Params.List) == 1 {
-					if id, ok := ft.Params.List[0].Type.(*ast.Ident); ok && id.Name == "string" {
-						if m.Names != nil && m.Names[0].Name == "setMsg" {
-							return true
-						}
-					}
+	for _, fields := range []*ast.FieldList{fn.Type.TypeParams, fn.Type.Params} {
+		if fields == nil {
+			continue
+		}
+		for _, f := range fields.List {
+			if interfaceHasSetMsg(f.Type) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func interfaceHasSetMsg(t ast.Expr) bool {
+	iface, ok := t.(*ast.InterfaceType)
+	if !ok || iface.Methods == nil {
+		return false
+	}
+	for _, m := range iface.Methods.List {
+		if ft, ok := m.Type.(*ast.FuncType); ok && len(ft.Params.List) == 1 {
+			if id, ok := ft.Params.List[0].Type.(*ast.Ident); ok && id.Name == "string" {
+				if m.Names != nil && m.Names[0].Name == "setMsg" {
+					return true
 				}
 			}
 		}
@@ -366,21 +441,16 @@ func funcUsesSetMsgConstraint(fn *ast.FuncDecl) bool {
 }
 
 func (em *errorsModernizer) rewriteSetMsgFactory(fn *ast.FuncDecl) bool {
-	if fn.Body == nil || len(fn.Body.List) < 2 {
+	if fn.Body == nil || !funcUsesSetMsgConstraint(fn) {
 		return false
 	}
-	last := fn.Body.List[len(fn.Body.List)-1]
-	ret, ok := last.(*ast.ReturnStmt)
-	if !ok || len(ret.Results) != 1 {
-		return false
-	}
-	if _, ok := ret.Results[0].(*ast.UnaryExpr); !ok {
-		return false
-	}
-	// Replace body with: return *errors.NewCustom[T](format, vals...)
 	typeParam := firstTypeParamName(fn)
 	if typeParam == "" {
 		return false
+	}
+	ptName := secondTypeParamName(fn)
+	if ptName == "" {
+		ptName = "PT"
 	}
 	formatName := "format"
 	valsName := "vals"
@@ -392,30 +462,50 @@ func (em *errorsModernizer) rewriteSetMsgFactory(fn *ast.FuncDecl) bool {
 			valsName = fn.Type.Params.List[1].Names[0].Name
 		}
 	}
-	newBody := []ast.Stmt{
-		&ast.ReturnStmt{Results: []ast.Expr{
-			&ast.UnaryExpr{
-				Op: token.MUL,
-				X: &ast.CallExpr{
-					Fun: &ast.IndexExpr{
-						X: &ast.SelectorExpr{
-							X:   &ast.Ident{Name: "errors"},
-							Sel: &ast.Ident{Name: "NewCustom"},
-						},
-						Index: &ast.Ident{Name: typeParam},
-					},
-					Args: []ast.Expr{
-						&ast.Ident{Name: formatName},
-						&ast.Ident{Name: valsName},
+	fn.Body.List = []ast.Stmt{
+		&ast.AssignStmt{
+			Tok: token.DEFINE,
+			Lhs: []ast.Expr{&ast.Ident{Name: "pt"}},
+			Rhs: []ast.Expr{&ast.CallExpr{
+				Fun: &ast.Ident{Name: ptName},
+				Args: []ast.Expr{&ast.CallExpr{
+					Fun: &ast.Ident{Name: "new"},
+					Args: []ast.Expr{&ast.Ident{Name: typeParam}},
+				}},
+			}},
+		},
+		&ast.ExprStmt{X: &ast.CallExpr{
+			Fun: &ast.SelectorExpr{
+				X:   &ast.Ident{Name: "errors"},
+				Sel: &ast.Ident{Name: "InitCustom"},
+			},
+			Args: []ast.Expr{
+				&ast.UnaryExpr{
+					Op: token.AND,
+					X: &ast.SelectorExpr{
+						X:   &ast.Ident{Name: "pt"},
+						Sel: &ast.Ident{Name: "Base"},
 					},
 				},
+				&ast.Ident{Name: formatName},
+				&ast.Ident{Name: valsName},
 			},
 		}},
+		&ast.ReturnStmt{Results: []ast.Expr{&ast.UnaryExpr{Op: token.MUL, X: &ast.Ident{Name: "pt"}}}},
 	}
-	fn.Body.List = newBody
 	em.mark()
 	em.ensureImport("errors")
 	return true
+}
+
+func secondTypeParamName(fn *ast.FuncDecl) string {
+	if fn.Type.TypeParams == nil || len(fn.Type.TypeParams.List) < 2 {
+		return ""
+	}
+	if len(fn.Type.TypeParams.List[1].Names) > 0 {
+		return fn.Type.TypeParams.List[1].Names[0].Name
+	}
+	return ""
 }
 
 func firstTypeParamName(fn *ast.FuncDecl) string {
