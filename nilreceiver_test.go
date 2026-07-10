@@ -467,8 +467,13 @@ func work(tgt *Target) {
 
 	files := []*ast.File{f}
 	returns := buildReturnTypeIndex(files)
-	if n := nilableMethodGuards(f, files, returns, nil); n != 1 {
-		t.Fatalf("nilableMethodGuards rewrote %d, want 1 in func lit", n)
+	varIdx := buildFuncVarIndex(files, returns, nil)
+	if !isNilablePointerType(varIdx.byFunc[fn]["tgt"]) {
+		t.Fatal("expected nilable tgt param")
+	}
+	// Outer nil check must not suppress guards inside the func lit.
+	if n := nilableMethodGuards(f, files, returns, nil); n < 1 {
+		t.Fatalf("nilableMethodGuards rewrote %d, want at least 1 in func lit", n)
 	}
 }
 

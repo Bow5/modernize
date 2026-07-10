@@ -1065,10 +1065,12 @@ func nilableMethodGuards(f *ast.File, files []*ast.File, returns *returnTypeInde
 
 func rewriteNilableMethodStmts(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, stmts []ast.Stmt, narrowed map[string]bool, count int) ([]ast.Stmt, int) {
 	var out []ast.Stmt
-	for i, stmt := range stmts {
-		rewritten, stmtCount := rewriteNilableMethodStmt(fn, varIdx, returns, modIdx, f, stmt, narrowed, stmts, i)
+	for i := 0; i < len(stmts); i++ {
+		stmt := stmts[i]
+		rewritten, stmtCount, skip := rewriteNilableMethodStmt(fn, varIdx, returns, modIdx, f, stmt, narrowed, stmts, i)
 		count += stmtCount
 		out = append(out, rewritten...)
+		i += skip
 		narrowed = narrowAfterStmt(stmt, narrowed)
 	}
 	return out, count
@@ -1095,12 +1097,12 @@ func rewriteFuncLitBodies(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *retur
 	return count
 }
 
-func rewriteNilableMethodStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, stmt ast.Stmt, narrowed map[string]bool, block []ast.Stmt, blockIdx int) ([]ast.Stmt, int) {
+func rewriteNilableMethodStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, stmt ast.Stmt, narrowed map[string]bool, block []ast.Stmt, blockIdx int) ([]ast.Stmt, int, int) {
 	switch s := stmt.(type) {
 	case *ast.BlockStmt:
 		list, n := rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, s.List, copyBoolMap(narrowed), 0)
 		s.List = list
-		return []ast.Stmt{s}, n
+		return []ast.Stmt{s}, n, 0
 	case *ast.IfStmt:
 		count := 0
 		inner := copyBoolMap(narrowed)
@@ -1119,18 +1121,18 @@ func rewriteNilableMethodStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *r
 			count += n
 		}
 		if s.Else != nil {
-			elseStmts, n := rewriteNilableMethodStmt(fn, varIdx, returns, modIdx, f, s.Else, narrowed, nil, -1)
+			elseStmts, n, _ := rewriteNilableMethodStmt(fn, varIdx, returns, modIdx, f, s.Else, narrowed, nil, -1)
 			count += n
 			if len(elseStmts) == 1 {
 				s.Else = elseStmts[0]
 			}
 		}
-		return []ast.Stmt{s}, count
+		return []ast.Stmt{s}, count, 0
 	case *ast.ForStmt:
 		if s.Body != nil {
 			list, n := rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, s.Body.List, copyBoolMap(narrowed), 0)
 			s.Body.List = list
-			return []ast.Stmt{s}, n
+			return []ast.Stmt{s}, n, 0
 		}
 	case *ast.RangeStmt:
 		if call, ok := ast.Unparen(s.X).(*ast.CallExpr); ok {
@@ -1147,36 +1149,42 @@ func rewriteNilableMethodStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *r
 				if s.Body != nil {
 					list, n := rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, guard.Body.List, copyBoolMap(narrowed), 0)
 					guard.Body.List = list
-					return []ast.Stmt{guard}, n + 1
+					return []ast.Stmt{guard}, n + 1, 0
 				}
-				return []ast.Stmt{guard}, 1
+				return []ast.Stmt{guard}, 1, 0
 			}
 		}
 		if s.Body != nil {
 			list, n := rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, s.Body.List, copyBoolMap(narrowed), 0)
 			s.Body.List = list
-			return []ast.Stmt{s}, n
+			return []ast.Stmt{s}, n, 0
 		}
 	case *ast.ExprStmt:
+		if stmts, n, skip, ok := nilableRootStmtGuard(fn, varIdx, f, s, narrowed, block, blockIdx); ok {
+			return stmts, n, skip
+		}
 		if guard, ok := nilableMethodGuardFromCall(fn, varIdx, returns, modIdx, f, s.X, narrowed); ok {
-			return []ast.Stmt{guard}, 1
+			return []ast.Stmt{guard}, 1, 0
 		}
 		if guard, ok := nilableStarDerefGuard(fn, varIdx, returns, modIdx, f, s, narrowed); ok {
-			return []ast.Stmt{guard}, 1
+			return []ast.Stmt{guard}, 1, 0
 		}
 	case *ast.AssignStmt:
+		if stmts, n, skip, ok := nilableRootStmtGuard(fn, varIdx, f, s, narrowed, block, blockIdx); ok {
+			return stmts, n, skip
+		}
 		if len(s.Lhs) == 1 {
 			if guard, ok := nilableFieldAssignGuard(fn, varIdx, returns, modIdx, f, s, narrowed); ok {
-				return []ast.Stmt{guard}, 1
+				return []ast.Stmt{guard}, 1, 0
 			}
 		}
 		if len(s.Rhs) == 1 {
-			if stmts, ok := nilableMethodGuardFromAssign(fn, varIdx, returns, modIdx, f, s, narrowed, block, blockIdx); ok {
-				return stmts, len(stmts)
+			if stmts, skip, ok := nilableMethodGuardFromAssign(fn, varIdx, returns, modIdx, f, s, narrowed, block, blockIdx); ok {
+				return stmts, len(stmts), skip
 			}
 		}
 		if guard, ok := nilableStarDerefGuard(fn, varIdx, returns, modIdx, f, s, narrowed); ok {
-			return []ast.Stmt{guard}, 1
+			return []ast.Stmt{guard}, 1, 0
 		}
 	case *ast.SelectStmt:
 		count := 0
@@ -1187,9 +1195,9 @@ func rewriteNilableMethodStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *r
 				count += n
 			}
 		}
-		return []ast.Stmt{s}, count
+		return []ast.Stmt{s}, count, 0
 	}
-	return []ast.Stmt{stmt}, 0
+	return []ast.Stmt{stmt}, 0, 0
 }
 
 func methodCallFromExpr(expr ast.Expr) (*ast.CallExpr, *ast.SelectorExpr, bool) {
@@ -1252,21 +1260,30 @@ func nilableMethodGuardFromCall(fn *ast.FuncDecl, varIdx *funcVarIndex, returns 
 	}, true
 }
 
-func nilableMethodGuardFromAssign(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, assign *ast.AssignStmt, narrowed map[string]bool, block []ast.Stmt, blockIdx int) ([]ast.Stmt, bool) {
+func nilableMethodGuardFromAssign(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, assign *ast.AssignStmt, narrowed map[string]bool, block []ast.Stmt, blockIdx int) ([]ast.Stmt, int, bool) {
 	call, sel, ok := methodCallFromExpr(assign.Rhs[0])
 	if !ok {
-		return nil, false
+		return nil, 0, false
 	}
 	guard, ok := nilableMethodGuardFromCall(fn, varIdx, returns, modIdx, f, call, narrowed)
 	if !ok {
-		return nil, false
+		return nil, 0, false
 	}
 	bodyExpr := guardedMethodCall(sel.X, call, sel)
 	if u, ok := ast.Unparen(assign.Rhs[0]).(*ast.UnaryExpr); ok && u.Op == token.ARROW {
 		bodyExpr = &ast.UnaryExpr{Op: token.ARROW, X: bodyExpr}
 	}
 	guardTok := assign.Tok
-	if id, ok := ast.Unparen(assign.Lhs[0]).(*ast.Ident); ok && assign.Tok == token.DEFINE && block != nil && identUsedLater(block, blockIdx, id.Name) {
+	skip := 0
+	refNames := assignRefNames(assign)
+	if block != nil && blockIdx >= 0 && len(refNames) > 0 && anyUsedLater(block, blockIdx, refNames) {
+		last := lastReferencingStmt(block, blockIdx, refNames)
+		if last > blockIdx {
+			skip = last - blockIdx
+			guard.Body.List = append(guard.Body.List, block[blockIdx+1:last+1]...)
+		}
+	}
+	if id, ok := ast.Unparen(assign.Lhs[0]).(*ast.Ident); ok && assign.Tok == token.DEFINE && block != nil && identUsedLater(block, blockIdx, id.Name) && skip == 0 {
 		vars := varIdx.byFunc[fn]
 		typ := assignTypeFromRHS(returns, modIdx, f, varIdx.structs, fn, vars, varIdx.pkgVars, assign.Rhs[0])
 		if typ != nil {
@@ -1288,15 +1305,49 @@ func nilableMethodGuardFromAssign(fn *ast.FuncDecl, varIdx *funcVarIndex, return
 						Rhs: []ast.Expr{bodyExpr},
 					}}},
 				},
-			}, true
+			}, 0, true
 		}
 	}
-	guard.Body.List = []ast.Stmt{&ast.AssignStmt{
+	guard.Body.List = append([]ast.Stmt{&ast.AssignStmt{
 		Tok: guardTok,
 		Lhs: assign.Lhs,
 		Rhs: []ast.Expr{bodyExpr},
-	}}
-	return []ast.Stmt{guard}, true
+	}}, guard.Body.List...)
+	return []ast.Stmt{guard}, skip, true
+}
+
+func assignRefNames(assign *ast.AssignStmt) []string {
+	var names []string
+	for _, lhs := range assign.Lhs {
+		if id, ok := ast.Unparen(lhs).(*ast.Ident); ok {
+			names = append(names, id.Name)
+		}
+	}
+	return names
+}
+
+func anyUsedLater(block []ast.Stmt, start int, names []string) bool {
+	for i := start + 1; i < len(block); i++ {
+		for _, name := range names {
+			if identUsedInNode(block[i], name) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func lastReferencingStmt(block []ast.Stmt, start int, names []string) int {
+	last := start
+	for i := start + 1; i < len(block); i++ {
+		for _, name := range names {
+			if identUsedInNode(block[i], name) {
+				last = i
+				break
+			}
+		}
+	}
+	return last
 }
 
 func identUsedLater(block []ast.Stmt, start int, name string) bool {
@@ -1332,6 +1383,72 @@ func assignTypeFromRHS(returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast
 		}
 	}
 	return resolveExprType(returns, modIdx, f, structs, fn, vars, pkgVars, rhs)
+}
+
+func nilableRootStmtGuard(fn *ast.FuncDecl, varIdx *funcVarIndex, f *ast.File, stmt ast.Stmt, narrowed map[string]bool, block []ast.Stmt, blockIdx int) ([]ast.Stmt, int, int, bool) {
+	vars := varIdx.byFunc[fn]
+	root := nilableRootInStmt(stmt, vars, varIdx.pkgVars, narrowed)
+	if root == "" {
+		return nil, 0, 0, false
+	}
+	rewriteRootAccessInStmt(stmt, root, "_root")
+	body := []ast.Stmt{stmt}
+	skip := 0
+	if block != nil && blockIdx >= 0 {
+		last := lastReferencingStmt(block, blockIdx, []string{root})
+		if last > blockIdx {
+			for i := blockIdx + 1; i <= last; i++ {
+				rewriteRootAccessInStmt(block[i], root, "_root")
+				body = append(body, block[i])
+			}
+			skip = last - blockIdx
+		}
+	}
+	guard := &ast.IfStmt{
+		Init: &ast.AssignStmt{
+			Tok: token.DEFINE,
+			Lhs: []ast.Expr{&ast.Ident{Name: "_root"}},
+			Rhs: []ast.Expr{&ast.Ident{Name: root}},
+		},
+		Cond: &ast.BinaryExpr{
+			X:  &ast.Ident{Name: "_root"},
+			Op: token.NEQ,
+			Y:  &ast.Ident{Name: "nil"},
+		},
+		Body: &ast.BlockStmt{List: body},
+	}
+	return []ast.Stmt{guard}, 1, skip, true
+}
+
+func nilableRootInStmt(stmt ast.Stmt, vars map[string]ast.Expr, pkgVars map[string]ast.Expr, narrowed map[string]bool) string {
+	var found string
+	ast.Inspect(stmt, func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		root := selectorRootIdent(sel.X)
+		if root == "" || narrowed[root] {
+			return true
+		}
+		if !isNilablePointerType(vars[root]) && !isNilablePointerType(pkgVars[root]) {
+			return true
+		}
+		found = root
+		return false
+	})
+	return found
+}
+
+func rewriteRootAccessInStmt(stmt ast.Stmt, root, temp string) {
+	ast.Inspect(stmt, func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok || selectorRootIdent(sel.X) != root {
+			return true
+		}
+		sel.X = &ast.Ident{Name: temp}
+		return true
+	})
 }
 
 func nilableStarDerefIdent(fn *ast.FuncDecl, varIdx *funcVarIndex, stmt ast.Stmt, narrowed map[string]bool) string {
