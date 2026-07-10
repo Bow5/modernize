@@ -88,8 +88,13 @@ func runModernize(absRoot string, cfg Config) (passSummary, error) {
 		return summary, err
 	}
 
+	modIdx, err := buildModuleFuncIndex(absRoot, pkgs)
+	if err != nil {
+		return summary, err
+	}
+
 	for _, pkg := range pkgs {
-		paths, n, e := modernizePackage(pkg, cfg)
+		paths, n, e := modernizePackage(pkg, cfg, modIdx)
 		if e != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", pkg.dir, e)
 			continue
@@ -157,7 +162,7 @@ type rewriteCounts struct {
 	optionalChains int
 }
 
-func modernizePackage(pkg pkgFiles, cfg Config) (changedPaths []string, counts rewriteCounts, err error) {
+func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (changedPaths []string, counts rewriteCounts, err error) {
 	fset := token.NewFileSet()
 	files := make([]*ast.File, len(pkg.paths))
 	for i, path := range pkg.paths {
@@ -178,7 +183,7 @@ func modernizePackage(pkg pkgFiles, cfg Config) (changedPaths []string, counts r
 	pkgExtraFields := collectPackageHasExtraErrorTypes(files)
 
 	for i, path := range pkg.paths {
-		_, countsPart, fileChanged, e := modernizeParsedFile(fset, files, files[i], path, nilableChanged[i], pkgEmbed, pkgExtraFields, cfg)
+		_, countsPart, fileChanged, e := modernizeParsedFile(fset, files, files[i], path, nilableChanged[i], pkgEmbed, pkgExtraFields, cfg, modIdx)
 		if e != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", path, e)
 			continue
@@ -202,7 +207,7 @@ func modernizePackage(pkg pkgFiles, cfg Config) (changedPaths []string, counts r
 	return changedPaths, counts, nil
 }
 
-func modernizeParsedFile(fset *token.FileSet, pkgFiles []*ast.File, f *ast.File, path string, forceWrite bool, pkgEmbed map[string]string, pkgExtraFields map[string][]string, cfg Config) (nilableChanged bool, counts rewriteCounts, changed bool, err error) {
+func modernizeParsedFile(fset *token.FileSet, pkgFiles []*ast.File, f *ast.File, path string, forceWrite bool, pkgEmbed map[string]string, pkgExtraFields map[string][]string, cfg Config, modIdx *moduleFuncIndex) (nilableChanged bool, counts rewriteCounts, changed bool, err error) {
 	mod := &fileModernizer{fset: fset, file: f, pkgEmbed: pkgEmbed, pkgExtraFields: pkgExtraFields, cfg: cfg}
 
 	if cfg.ErrBangSignatures {
@@ -235,7 +240,7 @@ func modernizeParsedFile(fset *token.FileSet, pkgFiles []*ast.File, f *ast.File,
 		counts.shorthand = mod.modernizeShorthandTypes()
 	}
 	if cfg.RemoveNilReceiverGuards || cfg.OptionalMethodChains {
-		guards, chains := modernizeNilReceivers(f, pkgFiles, cfg)
+		guards, chains := modernizeNilReceivers(f, pkgFiles, cfg, modIdx)
 		counts.nilRecvGuards = guards
 		counts.optionalChains = chains
 		if guards > 0 || chains > 0 {
@@ -263,7 +268,7 @@ func modernizeFile(path string) (bool, int, error) {
 	}
 	f.NilablePointersRegions = buildNilablePointersRegions(collectNilablePointersDirectives(f))
 	changedFlags, _ := applyPtrAnnotations(fset, []*ast.File{f})
-	_, countsPart, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, path, changedFlags[0], nil, nil, DefaultConfig())
+	_, countsPart, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, path, changedFlags[0], nil, nil, DefaultConfig(), nil)
 	return changed, countsPart.callBang + countsPart.errBang, err
 }
 

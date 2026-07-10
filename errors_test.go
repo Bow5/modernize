@@ -151,7 +151,7 @@ type Saver interface {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +322,7 @@ func lockedOpen() (*os.File, error) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +400,7 @@ func lockedOpen(path string) (*os.File, error) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -453,7 +453,7 @@ type Item struct{ parts []string }
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -498,7 +498,7 @@ func expand(s string) ([]string, error) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -546,7 +546,7 @@ type Item struct {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -601,7 +601,7 @@ func Errorf(format string, vals ...any) ErrConfigGeneric {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, _, err = modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "config.go"), false, nil, nil, DefaultConfig())
+	_, _, _, err = modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "config.go"), false, nil, nil, DefaultConfig(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -643,7 +643,7 @@ func newEncrypt(key []byte) error {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -692,7 +692,7 @@ func fail() error {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -749,7 +749,7 @@ func other() error {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -800,7 +800,7 @@ func other() error {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -846,7 +846,7 @@ func (ri *RI) persist() error {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -886,7 +886,7 @@ func run() error {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -923,7 +923,7 @@ func run() error {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	_, _, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -965,7 +965,7 @@ func fake() (int, error) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, counts, _, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	_, counts, _, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1003,7 +1003,7 @@ func other() error {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, counts, _, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	_, counts, _, err := modernizeParsedFile(fset, []*ast.File{f}, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
