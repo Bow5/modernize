@@ -518,11 +518,18 @@ func resolveExprType(returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.F
 	}
 }
 
+func receiverExprType(returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, structs *structFieldIndex, fn *ast.FuncDecl, vars map[string]ast.Expr, expr ast.Expr) ast.Expr {
+	if id, ok := ast.Unparen(expr).(*ast.Ident); ok {
+		return vars[id.Name]
+	}
+	return resolveExprType(returns, modIdx, f, structs, fn, vars, expr)
+}
+
 func receiverTypeForSelector(returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, structs *structFieldIndex, fn *ast.FuncDecl, vars map[string]ast.Expr, sel *ast.SelectorExpr) ast.Expr {
 	if sel == nil {
 		return nil
 	}
-	return resolveExprType(returns, modIdx, f, structs, fn, vars, sel.X)
+	return receiverExprType(returns, modIdx, f, structs, fn, vars, sel.X)
 }
 
 func selectorRootIdent(e ast.Expr) string {
@@ -612,7 +619,28 @@ func nilablePointerChains(f *ast.File, files []*ast.File, returns *returnTypeInd
 			continue
 		}
 		count += nilableChainsInBlock(fn, varIdx, returns, modIdx, f, fn.Body.List, map[string]bool{})
+		count += rewriteFuncLitNilableChains(fn, varIdx, returns, modIdx, f, fn.Body.List, map[string]bool{})
 	}
+	return count
+}
+
+func rewriteFuncLitNilableChains(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, stmts []ast.Stmt, narrowed map[string]bool) int {
+	count := 0
+	var walk func([]ast.Stmt)
+	walk = func(list []ast.Stmt) {
+		for _, stmt := range list {
+			ast.Inspect(stmt, func(n ast.Node) bool {
+				fl, ok := n.(*ast.FuncLit)
+				if !ok || fl.Body == nil {
+					return true
+				}
+				count += nilableChainsInBlock(fn, varIdx, returns, modIdx, f, fl.Body.List, copyBoolMap(narrowed))
+				walk(fl.Body.List)
+				return true
+			})
+		}
+	}
+	walk(stmts)
 	return count
 }
 
@@ -934,6 +962,28 @@ func rewriteNilableMethodStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *r
 			return []ast.Stmt{s}, n
 		}
 	case *ast.RangeStmt:
+		if call, ok := ast.Unparen(s.X).(*ast.CallExpr); ok {
+			if guard, ok := nilableMethodGuardFromCall(fn, varIdx, returns, modIdx, f, call, narrowed); ok {
+				sel := call.Fun.(*ast.SelectorExpr)
+				rangeStmt := &ast.RangeStmt{
+					Key:   s.Key,
+					Value: s.Value,
+					Tok:   s.Tok,
+					X: &ast.CallExpr{
+						Fun:  &ast.SelectorExpr{X: &ast.Ident{Name: "_recv"}, Sel: sel.Sel},
+						Args: call.Args,
+					},
+					Body: s.Body,
+				}
+				guard.Body.List = []ast.Stmt{rangeStmt}
+				if s.Body != nil {
+					list, n := rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, guard.Body.List, copyBoolMap(narrowed), 0)
+					guard.Body.List = list
+					return []ast.Stmt{guard}, n + 1
+				}
+				return []ast.Stmt{guard}, 1
+			}
+		}
 		if s.Body != nil {
 			list, n := rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, s.Body.List, copyBoolMap(narrowed), 0)
 			s.Body.List = list
