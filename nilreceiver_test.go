@@ -2,8 +2,10 @@ package main
 
 import (
 	"go/ast"
+	"go/format"
 	"go/parser"
 	"go/token"
+	"strings"
 	"testing"
 )
 
@@ -31,6 +33,14 @@ func (c *Connection) Subroute(s string) *Subroute {
 	fn := f.Decls[2].(*ast.FuncDecl)
 	if len(fn.Body.List) != 1 {
 		t.Fatalf("body len %d, want 1 after guard removal", len(fn.Body.List))
+	}
+	var buf strings.Builder
+	if err := format.Node(&buf, fset, f); err != nil {
+		t.Fatal(err)
+	}
+	formatted := collapseBlankLineAfterOpeningBrace([]byte(buf.String()))
+	if strings.Contains(string(formatted), "func (c *Connection) Subroute(s string) *Subroute {\n\n\treturn") {
+		t.Fatalf("extra blank line after guard removal:\n%s", formatted)
 	}
 }
 

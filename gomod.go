@@ -110,7 +110,8 @@ func writeFormattedFile(path string, fset *token.FileSet, f *ast.File) error {
 	if err := format.Node(&out, fset, f); err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, out.Bytes(), 0); err != nil {
+	data := collapseBlankLineAfterOpeningBrace(out.Bytes())
+	if err := os.WriteFile(path, data, 0); err != nil {
 		return err
 	}
 	gofmtPath := "gofmt"
@@ -122,4 +123,26 @@ func writeFormattedFile(path string, fset *token.FileSet, f *ast.File) error {
 		return fmt.Errorf("gofmt %s: %v: %s", path, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// collapseBlankLineAfterOpeningBrace removes a single blank line between an
+// opening brace and the next indented statement — common after deleting a
+// nil-receiver guard block.
+func collapseBlankLineAfterOpeningBrace(src []byte) []byte {
+	lines := strings.Split(string(src), "\n")
+	var out []string
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		if strings.HasSuffix(strings.TrimSpace(line), "{") && i+2 < len(lines) && lines[i+1] == "" && isIndentedStmtLine(lines[i+2]) {
+			out = append(out, line)
+			i++
+			continue
+		}
+		out = append(out, line)
+	}
+	return []byte(strings.Join(out, "\n"))
+}
+
+func isIndentedStmtLine(line string) bool {
+	return strings.HasPrefix(line, "\t") || strings.HasPrefix(line, "    ")
 }

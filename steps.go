@@ -142,6 +142,14 @@ func runStepCommits(absRoot string, baseCfg Config, vcsRoot string, kind vcsKind
 			changed, err = runFormattingPass(absRoot, vcsRoot, kind)
 		} else {
 			changed, err = runModernizePass(absRoot, stepCfg)
+			if err == nil && step.name == "nil_receivers" && len(changed) > 0 {
+				fmtChanged, fmtErr := runFormattingPass(absRoot, vcsRoot, kind)
+				if fmtErr != nil {
+					err = fmtErr
+				} else if len(fmtChanged) > 0 {
+					changed = mergeChangedPaths(changed, fmtChanged)
+				}
+			}
 		}
 		if err != nil {
 			return fmt.Errorf("%s: %w", step.name, err)
@@ -223,6 +231,19 @@ type passSummary struct {
 	changedFiles int
 	changedPaths []string
 	counts       rewriteCounts
+}
+
+func mergeChangedPaths(a, b []string) []string {
+	seen := make(map[string]struct{}, len(a)+len(b))
+	var out []string
+	for _, path := range append(a, b...) {
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		out = append(out, path)
+	}
+	return out
 }
 
 func runModernizePass(absRoot string, cfg Config) ([]string, error) {

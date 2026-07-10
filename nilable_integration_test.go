@@ -208,3 +208,41 @@ func Verify() (*Config, *RemoteErr) {
 		t.Fatalf("non-error pair should keep strict second result")
 	}
 }
+
+func TestPtrAnnotatorNilReturnWithNonNilPath(t *testing.T) {
+	const src = `package p
+
+type Client struct{}
+
+func newClient() *Client {
+	c, err := open()
+	if err != nil {
+		return nil
+	}
+	return c
+}
+
+func open() (*Client, error) {
+	return nil, nil
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, _ := applyPtrAnnotations(fset, []*ast.File{f})
+	if !changed[0] {
+		t.Fatal("expected pointer annotation changes")
+	}
+	out := formatTestFile(fset, f)
+	if !strings.Contains(out, "newClient() *Client?") {
+		t.Fatalf("expected nilable return type:\n%s", out)
+	}
+	if strings.Contains(out, "return new(") {
+		t.Fatalf("must not replace return nil with return new:\n%s", out)
+	}
+	if !strings.Contains(out, "return nil") {
+		t.Fatalf("expected return nil preserved:\n%s", out)
+	}
+}

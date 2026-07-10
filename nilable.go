@@ -104,6 +104,9 @@ func (a *ptrAnnotator) finalizeNilableResults() {
 		if a.lookupResult[key] {
 			continue
 		}
+		if key.kind == "result" {
+			continue // return nil on some paths → *T?
+		}
 		delete(a.nilable, key)
 	}
 }
@@ -646,13 +649,10 @@ func applyPtrAnnotations(fset *token.FileSet, files []*ast.File) (changed []bool
 		if rewriteFilePointerTypes(fset, f, ann) {
 			fileChanged = true
 		}
-		if fixNilReturnsForStrictPointerResults(f, ann) {
+		if splitNilOrReturnGuards(fset, f, ann) {
 			fileChanged = true
 		}
-		if splitNilOrReturnGuards(f, ann) {
-			fileChanged = true
-		}
-		if fixFindPassthroughReturns(f, ann) {
+		if fixFindPassthroughReturns(fset, f, ann) {
 			fileChanged = true
 		}
 		if syncMethodReturnsForNilableFields(fset, f, ann) {
@@ -1051,84 +1051,7 @@ func collectNilablePointersDirectives(file *ast.File) []nilablePointersDirective
 	return dirs
 }
 
-func fixNilReturnsForStrictPointerResults(f *ast.File, ann *ptrAnnotator) bool {
-	changed := false
-	for _, decl := range f.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Type == nil || fn.Type.Results == nil || fn.Body == nil {
-			continue
-		}
-		flat := flattenFields("result", fn.Name.Name, fn.Type.Results)
-		if len(flat) != 1 || plainStarType(flat[0].typ) == nil {
-			continue
-		}
-		if ann.nilable[flat[0].key] {
-			continue
-		}
-		fixNilReturnsInBlock(fn.Body, flat[0].typ, &changed)
-	}
-	return changed
-}
-
-func fixNilReturnsInBlock(body *ast.BlockStmt, typ ast.Expr, changed *bool) {
-	if body == nil {
-		return
-	}
-	for _, st := range body.List {
-		switch s := st.(type) {
-		case *ast.ReturnStmt:
-			if len(s.Results) == 1 && isNilExpr(s.Results[0]) {
-				s.Results[0] = zeroPointerExpr(typ)
-				*changed = true
-			}
-		case *ast.BlockStmt:
-			fixNilReturnsInBlock(s, typ, changed)
-		case *ast.IfStmt:
-			if s.Body != nil {
-				fixNilReturnsInBlock(s.Body, typ, changed)
-			}
-			if elseBlk, ok := s.Else.(*ast.BlockStmt); ok {
-				fixNilReturnsInBlock(elseBlk, typ, changed)
-			} else if elseIf, ok := s.Else.(*ast.IfStmt); ok && elseIf.Body != nil {
-				fixNilReturnsInBlock(elseIf.Body, typ, changed)
-			}
-		case *ast.ForStmt:
-			if s.Body != nil {
-				fixNilReturnsInBlock(s.Body, typ, changed)
-			}
-		case *ast.RangeStmt:
-			if s.Body != nil {
-				fixNilReturnsInBlock(s.Body, typ, changed)
-			}
-		case *ast.SwitchStmt:
-			if s.Body != nil {
-				for _, cc := range s.Body.List {
-					if clause, ok := cc.(*ast.CaseClause); ok {
-						fixNilReturnsInBlock(&ast.BlockStmt{List: clause.Body}, typ, changed)
-					}
-				}
-			}
-		case *ast.TypeSwitchStmt:
-			if s.Body != nil {
-				for _, cc := range s.Body.List {
-					if clause, ok := cc.(*ast.CaseClause); ok {
-						fixNilReturnsInBlock(&ast.BlockStmt{List: clause.Body}, typ, changed)
-					}
-				}
-			}
-		}
-	}
-}
-
-func zeroPointerExpr(typ ast.Expr) ast.Expr {
-	star := plainStarType(typ)
-	if star == nil {
-		return &ast.Ident{Name: "nil"}
-	}
-	return &ast.CallExpr{Fun: &ast.Ident{Name: "new"}, Args: []ast.Expr{star.X}}
-}
-
-func splitNilOrReturnGuards(f *ast.File, ann *ptrAnnotator) bool {
+func splitNilOrReturnGuards(fset *token.FileSet, f *ast.File, ann *ptrAnnotator) bool {
 	changed := false
 	for _, decl := range f.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
@@ -1139,14 +1062,18 @@ func splitNilOrReturnGuards(f *ast.File, ann *ptrAnnotator) bool {
 		if len(flat) != 1 || plainStarType(flat[0].typ) == nil || ann.nilable[flat[0].key] {
 			continue
 		}
-		if splitNilOrReturnInBlock(fn.Body, flat[0].typ, &changed) {
+		if splitNilOrReturnInBlock(fn.Body, &changed) {
+			ann.nilable[flat[0].key] = true
+			if newTyp, ok := rewriteTypeAt(fset, f, fn.Type.Results.List[0].Type, true); ok {
+				fn.Type.Results.List[0].Type = newTyp
+			}
 			changed = true
 		}
 	}
 	return changed
 }
 
-func splitNilOrReturnInBlock(body *ast.BlockStmt, resTyp ast.Expr, changed *bool) bool {
+func splitNilOrReturnInBlock(body *ast.BlockStmt, changed *bool) bool {
 	if body == nil {
 		return false
 	}
@@ -1174,7 +1101,7 @@ func splitNilOrReturnInBlock(body *ast.BlockStmt, resTyp ast.Expr, changed *bool
 		}
 		nilIf := &ast.IfStmt{
 			Cond: &ast.BinaryExpr{X: &ast.Ident{Name: varName}, Op: token.EQL, Y: &ast.Ident{Name: "nil"}},
-			Body: &ast.BlockStmt{List: []ast.Stmt{&ast.ReturnStmt{Results: []ast.Expr{zeroPointerExpr(resTyp)}}}},
+			Body: &ast.BlockStmt{List: []ast.Stmt{&ast.ReturnStmt{Results: []ast.Expr{&ast.Ident{Name: "nil"}}}}},
 		}
 		ifs.Cond = op.Y
 		body.List[i] = nilIf
@@ -1216,7 +1143,7 @@ func lastReturn(body *ast.BlockStmt) (*ast.ReturnStmt, bool) {
 	return nil, false
 }
 
-func fixFindPassthroughReturns(f *ast.File, ann *ptrAnnotator) bool {
+func fixFindPassthroughReturns(fset *token.FileSet, f *ast.File, ann *ptrAnnotator) bool {
 	changed := false
 	for _, decl := range f.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
@@ -1253,8 +1180,12 @@ func fixFindPassthroughReturns(f *ast.File, ann *ptrAnnotator) bool {
 					Cond: &ast.BinaryExpr{X: &ast.Ident{Name: "_r"}, Op: token.NEQ, Y: &ast.Ident{Name: "nil"}},
 					Body: &ast.BlockStmt{List: []ast.Stmt{&ast.ReturnStmt{Results: []ast.Expr{&ast.Ident{Name: "_r"}}}}},
 				},
-				&ast.ReturnStmt{Results: []ast.Expr{zeroPointerExpr(flat[0].typ)}},
+				&ast.ReturnStmt{Results: []ast.Expr{&ast.Ident{Name: "nil"}}},
 			}, fn.Body.List[i+1:]...)...)
+			ann.nilable[flat[0].key] = true
+			if newTyp, ok := rewriteTypeAt(fset, f, fn.Type.Results.List[0].Type, true); ok {
+				fn.Type.Results.List[0].Type = newTyp
+			}
 			changed = true
 			break
 		}
