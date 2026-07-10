@@ -619,6 +619,12 @@ func resolveExprType(returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.F
 			}
 		}
 		return nil
+	case *ast.StarExpr:
+		inner := resolveExprType(returns, modIdx, f, structs, fn, vars, pkgVars, x.X)
+		if inner == nil {
+			return nil
+		}
+		return unwrapAssignableType(inner)
 	case *ast.CallExpr:
 		return resolveCallResultTypeAt(returns, modIdx, f, structs, fn, vars, pkgVars, x, 0)
 	case *ast.NullCondExpr:
@@ -1821,13 +1827,17 @@ func defaultReturnStmt(fn *ast.FuncDecl) ast.Stmt {
 	if fn == nil || fn.Type == nil || fn.Type.Results == nil {
 		return nil
 	}
-	flat := flattenAllResultTypes(fn.Type.Results)
+	flat := flattenFields("result", fn.Name.Name, fn.Type.Results)
 	if len(flat) == 0 {
 		return nil
 	}
 	results := make([]ast.Expr, len(flat))
-	for i, t := range flat {
-		results[i] = zeroExprForType(t)
+	for i, tf := range flat {
+		if tf.key.name != "" {
+			results[i] = &ast.Ident{Name: tf.key.name}
+			continue
+		}
+		results[i] = zeroExprForType(tf.typ)
 	}
 	return &ast.ReturnStmt{Results: results}
 }
@@ -1913,12 +1923,15 @@ func coalesceStringFieldsInNode(fn *ast.FuncDecl, varIdx *funcVarIndex, returns 
 
 func coalesceOptionalBoolUnary(f *ast.File, files []*ast.File) int {
 	structs := buildStructFieldIndex(files)
+	returns := buildReturnTypeIndex(files)
+	varIdx := buildFuncVarIndex(files, returns, nil)
 	count := 0
 	for _, decl := range f.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
 			continue
 		}
+		vars := varIdx.byFunc[fn]
 		ast.Inspect(fn, func(n ast.Node) bool {
 			u, ok := n.(*ast.UnaryExpr)
 			if !ok || u.Op != token.NOT {
@@ -1928,7 +1941,7 @@ func coalesceOptionalBoolUnary(f *ast.File, files []*ast.File) int {
 			if !ok || !alreadyNullCond(sel.X) {
 				return true
 			}
-			if !isBoolishType(fieldTypeFromOptionalSelectorExpr(structs, sel)) {
+			if !isBoolishType(fieldTypeFromOptionalSelectorExpr(structs, sel, vars)) {
 				return true
 			}
 			u.X = &ast.BinaryExpr{
@@ -1943,16 +1956,19 @@ func coalesceOptionalBoolUnary(f *ast.File, files []*ast.File) int {
 	return count
 }
 
-func fieldTypeFromOptionalSelectorExpr(structs *structFieldIndex, sel *ast.SelectorExpr) ast.Expr {
+func fieldTypeFromOptionalSelectorExpr(structs *structFieldIndex, sel *ast.SelectorExpr, vars map[string]ast.Expr) ast.Expr {
 	if structs == nil || sel == nil || sel.Sel == nil {
 		return nil
 	}
-	if id, ok := sel.X.(*ast.NullCondExpr); ok {
-		if inner, ok := ast.Unparen(id.X).(*ast.Ident); ok {
-			return structs.fieldType(inner.Name, sel.Sel.Name)
-		}
+	root := selectorRootIdent(sel.X)
+	if root == "" {
+		return nil
 	}
-	return nil
+	recvType := vars[root]
+	if recvType == nil {
+		return nil
+	}
+	return fieldTypeFromReceiver(structs, recvType, sel.Sel.Name)
 }
 
 func isBoolishType(t ast.Expr) bool {
