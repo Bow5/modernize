@@ -277,3 +277,45 @@ func open() (*Client, error) {
 		t.Fatalf("expected return nil preserved:\n%s", out)
 	}
 }
+
+func TestPtrAnnotatorPropagatesNilableFromCalleeReturn(t *testing.T) {
+	const src = `package p
+
+type Checksum struct{ Encoded string }
+
+func NewChecksumWithType(value string) *Checksum {
+	if value == "" {
+		return nil
+	}
+	return &Checksum{Encoded: value}
+}
+
+func NewChecksumString(value string) *Checksum {
+	return NewChecksumWithType(value)
+}
+
+type Reader struct {
+	Result *Checksum
+}
+
+func (r *Reader) read() {
+	r.Result = NewChecksumWithType("x")
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, _ := applyPtrAnnotations(fset, []*ast.File{f})
+	if !changed[0] {
+		t.Fatal("expected pointer annotation changes")
+	}
+	out := formatTestFile(fset, f)
+	if !strings.Contains(out, "NewChecksumString(value string) *Checksum?") {
+		t.Fatalf("expected passthrough return to be nilable:\n%s", out)
+	}
+	if !strings.Contains(out, "Result *Checksum?") {
+		t.Fatalf("expected field assigned from nilable callee to be nilable:\n%s", out)
+	}
+}

@@ -47,6 +47,7 @@ func (a *ptrAnnotator) analyze() {
 		a.scanNilEvidence(f)
 	}
 	a.markLookupResults()
+	a.propagateNilableFromCalleeReturns()
 	a.propagateNilableParamToAssignedFields()
 	a.dropNilableParamsUsedAsCallArgs()
 	a.dropNilableReassignedParams()
@@ -501,6 +502,147 @@ func compositeLitTypeName(lit *ast.CompositeLit) string {
 		return ""
 	}
 	return ""
+}
+
+func (a *ptrAnnotator) calleeResultKey(call *ast.CallExpr, resultIndex int) (ptrSiteKey, bool) {
+	name, _, isMethod := callTarget(call.Fun)
+	if name == "" {
+		return ptrSiteKey{}, false
+	}
+	for _, fn := range a.funcs[name] {
+		if isMethod {
+			if fn.Recv == nil {
+				continue
+			}
+		} else if fn.Recv != nil {
+			continue
+		}
+		if fn.Type == nil || fn.Type.Results == nil {
+			continue
+		}
+		flat := flattenFields("result", fn.Name.Name, fn.Type.Results)
+		if resultIndex >= len(flat) {
+			continue
+		}
+		key := flat[resultIndex].key
+		if a.nilable[key] {
+			return key, true
+		}
+	}
+	return ptrSiteKey{}, false
+}
+
+func (a *ptrAnnotator) markAssignTargetNilable(lhs ast.Expr, owner string, fn *ast.FuncDecl) bool {
+	switch e := ast.Unparen(lhs).(type) {
+	case *ast.Ident:
+		key := ptrSiteKey{kind: "var", owner: owner, name: e.Name, index: -1}
+		if a.typeNode[key] == nil {
+			return false
+		}
+		if a.nilable[key] {
+			delete(a.strictResult, key)
+			return false
+		}
+		a.nilable[key] = true
+		delete(a.strictResult, key)
+		return true
+	case *ast.SelectorExpr:
+		field := e.Sel.Name
+		typeName := ""
+		if recv, ok := e.X.(*ast.Ident); ok && fn != nil && fn.Recv != nil {
+			recvName, recvType, ok := recvNameAndType(fn.Recv)
+			if ok && recv.Name == recvName {
+				typeName = recvType
+			}
+		}
+		if typeName == "" {
+			var ok bool
+			typeName, field, ok = selectorField(e)
+			if !ok {
+				return false
+			}
+		}
+		key := ptrSiteKey{kind: "field", owner: typeName, name: field, index: -1}
+		if a.typeNode[key] == nil {
+			return false
+		}
+		if a.nilable[key] {
+			return false
+		}
+		a.nilable[key] = true
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *ptrAnnotator) propagateNilableFromCalleeReturns() {
+	for a.propagateNilableFromCalleeReturnsOnce() {
+	}
+}
+
+func (a *ptrAnnotator) propagateNilableFromCalleeReturnsOnce() bool {
+	changed := false
+	for _, f := range a.files {
+		var curFunc *ast.FuncDecl
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.FuncDecl:
+				curFunc = x
+			case *ast.FuncLit:
+				return false
+			case *ast.ReturnStmt:
+				if curFunc == nil || curFunc.Type == nil || curFunc.Type.Results == nil || boolPairResults(curFunc.Type.Results) {
+					return true
+				}
+				flat := flattenFields("result", curFunc.Name.Name, curFunc.Type.Results)
+				for i, expr := range x.Results {
+					if i >= len(flat) || plainStarType(flat[i].typ) == nil {
+						continue
+					}
+					call, ok := ast.Unparen(expr).(*ast.CallExpr)
+					if !ok {
+						continue
+					}
+					if _, ok := a.calleeResultKey(call, i); !ok {
+						continue
+					}
+					key := flat[i].key
+					if !a.nilable[key] {
+						changed = true
+					}
+					a.nilable[key] = true
+					delete(a.strictResult, key)
+				}
+			case *ast.AssignStmt:
+				owner := ""
+				if curFunc != nil {
+					owner = curFunc.Name.Name
+				}
+				for i, lhs := range x.Lhs {
+					var call *ast.CallExpr
+					resultIdx := 0
+					if len(x.Rhs) == 1 {
+						call, _ = ast.Unparen(x.Rhs[0]).(*ast.CallExpr)
+						resultIdx = i
+					} else {
+						call, _ = ast.Unparen(rhsAt(x.Rhs, i)).(*ast.CallExpr)
+					}
+					if call == nil {
+						continue
+					}
+					if _, ok := a.calleeResultKey(call, resultIdx); !ok {
+						continue
+					}
+					if a.markAssignTargetNilable(lhs, owner, curFunc) {
+						changed = true
+					}
+				}
+			}
+			return true
+		})
+	}
+	return changed
 }
 
 func (a *ptrAnnotator) propagateNilableParamToAssignedFields() {
