@@ -617,10 +617,28 @@ func selectorField(sel *ast.SelectorExpr) (typeName, field string, ok bool) {
 	}
 }
 
-func applyPtrAnnotations(fset *token.FileSet, files []*ast.File) []bool {
+func (a *ptrAnnotator) countVerifiedNonNilPointers() int {
+	n := 0
+	for key, typ := range a.typeNode {
+		if plainStarType(typ) == nil {
+			continue
+		}
+		if a.nilable[key] {
+			continue
+		}
+		if nptDisabledAt(a.fset, typ.Pos(), a.files) {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+func applyPtrAnnotations(fset *token.FileSet, files []*ast.File) (changed []bool, verifiedNonNil int) {
 	ann := newPtrAnnotator(fset, files)
 	ann.analyze()
-	changed := make([]bool, len(files))
+	verifiedNonNil = ann.countVerifiedNonNilPointers()
+	changed = make([]bool, len(files))
 	for i, f := range files {
 		fileChanged := false
 		if rewriteFilePointerTypes(fset, f, ann) {
@@ -643,7 +661,7 @@ func applyPtrAnnotations(fset *token.FileSet, files []*ast.File) []bool {
 		}
 		changed[i] = fileChanged
 	}
-	return changed
+	return changed, verifiedNonNil
 }
 
 func syncMethodReturnsForNilableFields(fset *token.FileSet, f *ast.File, ann *ptrAnnotator) bool {

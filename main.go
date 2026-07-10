@@ -33,12 +33,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, "using config %s\n", cfgPath)
 	}
 
+	var changedFiles, callBangTotal, errBangTotal, nilableTotal, verifiedNonNilTotal, fmtErrorfTotal, customErrTotal int
 	if modRoot, ok := findModuleRoot(absRoot); ok {
 		if cfg.NilablePointersGoMod {
 			if changed, err := ensureNilablePointers(modRoot); err != nil {
 				fmt.Fprintf(os.Stderr, "%s: %v\n", filepath.Join(modRoot, "go.mod"), err)
 			} else if changed {
 				fmt.Println(filepath.Join(modRoot, "go.mod"))
+				changedFiles++
 			}
 		}
 		if cfg.NilablePointersGenDisable {
@@ -56,7 +58,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	var changedFiles, callBangTotal, errBangTotal, nilableTotal, fmtErrorfTotal, customErrTotal int
 	for _, pkg := range pkgs {
 		c, n, e := modernizePackage(pkg, cfg)
 		if e != nil {
@@ -67,11 +68,12 @@ func main() {
 		callBangTotal += n.callBang
 		errBangTotal += n.errBang
 		nilableTotal += n.nilable
+		verifiedNonNilTotal += n.verifiedNonNil
 		fmtErrorfTotal += n.fmtErrorf
 		customErrTotal += n.customErr
 	}
-	fmt.Fprintf(os.Stderr, "modernized %d files (%d nilable, %d call()!, %d err!, %d fmt.Errorf→errors.New, %d custom errors)\n",
-		changedFiles, nilableTotal, callBangTotal, errBangTotal, fmtErrorfTotal, customErrTotal)
+	fmt.Fprintf(os.Stderr, "modernized %d files (%d nilable, %d verified *T, %d call()!, %d err!, %d fmt.Errorf→errors.New, %d custom errors)\n",
+		changedFiles, nilableTotal, verifiedNonNilTotal, callBangTotal, errBangTotal, fmtErrorfTotal, customErrTotal)
 }
 
 type pkgFiles struct {
@@ -111,11 +113,12 @@ func collectPackages(root string) ([]pkgFiles, error) {
 }
 
 type rewriteCounts struct {
-	callBang  int
-	errBang   int
-	nilable   int
-	fmtErrorf int
-	customErr int
+	callBang       int
+	errBang        int
+	nilable        int
+	verifiedNonNil int
+	fmtErrorf      int
+	customErr      int
 }
 
 func modernizePackage(pkg pkgFiles, cfg Config) (changedFiles int, counts rewriteCounts, err error) {
@@ -131,8 +134,9 @@ func modernizePackage(pkg pkgFiles, cfg Config) (changedFiles int, counts rewrit
 	}
 
 	nilableChanged := make([]bool, len(files))
+	var verifiedNonNil int
 	if cfg.NilablePointersAnnotate {
-		nilableChanged = applyPtrAnnotations(fset, files)
+		nilableChanged, verifiedNonNil = applyPtrAnnotations(fset, files)
 	}
 	pkgEmbed := collectPackageEmbedOnlyTypes(files)
 	pkgExtraFields := collectPackageHasExtraErrorTypes(files)
@@ -155,6 +159,7 @@ func modernizePackage(pkg pkgFiles, cfg Config) (changedFiles int, counts rewrit
 			counts.nilable++
 		}
 	}
+	counts.verifiedNonNil = verifiedNonNil
 	return changedFiles, counts, nil
 }
 
@@ -207,7 +212,8 @@ func modernizeFile(path string) (bool, int, error) {
 		return false, 0, err
 	}
 	f.NilablePointersRegions = buildNilablePointersRegions(collectNilablePointersDirectives(f))
-	_, countsPart, changed, err := modernizeParsedFile(fset, f, path, applyPtrAnnotations(fset, []*ast.File{f})[0], nil, nil, DefaultConfig())
+	changedFlags, _ := applyPtrAnnotations(fset, []*ast.File{f})
+	_, countsPart, changed, err := modernizeParsedFile(fset, f, path, changedFlags[0], nil, nil, DefaultConfig())
 	return changed, countsPart.callBang + countsPart.errBang, err
 }
 

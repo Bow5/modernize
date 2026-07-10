@@ -81,6 +81,10 @@ func Call() {
 	if !strings.Contains(out, "Must(x *Node) *Node") {
 		t.Fatalf("Must should keep strict pointers:\n%s", out)
 	}
+
+	if got := ann.countVerifiedNonNilPointers(); got != 3 {
+		t.Fatalf("verified non-nil pointers = %d, want 3", got)
+	}
 }
 
 func TestPtrAnnotatorLookupTripleReturnStrict(t *testing.T) {
