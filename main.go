@@ -56,7 +56,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	var changedFiles, errBangTotal, nilableTotal, fmtErrorfTotal, customErrTotal int
+	var changedFiles, callBangTotal, errBangTotal, nilableTotal, fmtErrorfTotal, customErrTotal int
 	for _, pkg := range pkgs {
 		c, n, e := modernizePackage(pkg, cfg)
 		if e != nil {
@@ -64,13 +64,14 @@ func main() {
 			continue
 		}
 		changedFiles += c
+		callBangTotal += n.callBang
 		errBangTotal += n.errBang
 		nilableTotal += n.nilable
 		fmtErrorfTotal += n.fmtErrorf
 		customErrTotal += n.customErr
 	}
-	fmt.Fprintf(os.Stderr, "modernized %d files (%d nilable, %d err! rewrites, %d fmt.Errorf→errors.New, %d custom errors)\n",
-		changedFiles, nilableTotal, errBangTotal, fmtErrorfTotal, customErrTotal)
+	fmt.Fprintf(os.Stderr, "modernized %d files (%d nilable, %d call()!, %d err!, %d fmt.Errorf→errors.New, %d custom errors)\n",
+		changedFiles, nilableTotal, callBangTotal, errBangTotal, fmtErrorfTotal, customErrTotal)
 }
 
 type pkgFiles struct {
@@ -110,6 +111,7 @@ func collectPackages(root string) ([]pkgFiles, error) {
 }
 
 type rewriteCounts struct {
+	callBang  int
 	errBang   int
 	nilable   int
 	fmtErrorf int
@@ -145,6 +147,7 @@ func modernizePackage(pkg pkgFiles, cfg Config) (changedFiles int, counts rewrit
 			changedFiles++
 			fmt.Println(path)
 		}
+		counts.callBang += countsPart.callBang
 		counts.errBang += countsPart.errBang
 		counts.fmtErrorf += countsPart.fmtErrorf
 		counts.customErr += countsPart.customErr
@@ -184,7 +187,8 @@ func modernizeParsedFile(fset *token.FileSet, f *ast.File, path string, forceWri
 	if cfg.anyStructuredErrors() {
 		counts.fmtErrorf, counts.customErr = mod.modernizeStructuredErrors()
 	}
-	counts.errBang = mod.errBangCount
+	counts.callBang = mod.callBangCount
+	counts.errBang = mod.errBangStmtCount
 
 	if !mod.changed && !forceWrite {
 		return false, counts, false, nil
@@ -204,7 +208,7 @@ func modernizeFile(path string) (bool, int, error) {
 	}
 	f.NilablePointersRegions = buildNilablePointersRegions(collectNilablePointersDirectives(f))
 	_, countsPart, changed, err := modernizeParsedFile(fset, f, path, applyPtrAnnotations(fset, []*ast.File{f})[0], nil, nil, DefaultConfig())
-	return changed, countsPart.errBang, err
+	return changed, countsPart.callBang + countsPart.errBang, err
 }
 
 type fileModernizer struct {
@@ -214,7 +218,8 @@ type fileModernizer struct {
 	pkgExtraFields map[string][]string // has-extra error type → domain field names (package scope)
 	cfg            Config
 	changed        bool
-	errBangCount   int
+	callBangCount  int
+	errBangStmtCount int
 }
 
 func (m *fileModernizer) simplifyNilReturnsInFunc(fn *ast.FuncDecl) {
@@ -431,7 +436,7 @@ func blockDeclaresErr(body *ast.BlockStmt, name string) bool {
 }
 
 func (m *fileModernizer) propagateReturnErrInFunc(fn *ast.FuncDecl) {
-	if fn.Type == nil || fn.Body == nil || !hasResultTypeBang(fn.Type) {
+	if fn.Type == nil || fn.Body == nil || !canPropagateWithBang(fn.Type) {
 		return
 	}
 	var vt ast.Expr
@@ -498,12 +503,14 @@ func (m *fileModernizer) propagateReturnErrStmtList(list *[]ast.Stmt, vt ast.Exp
 		stmt := (*list)[i]
 		if tryStmt, ok := m.matchIfInitReturnErr(stmt, *list, i, vt, params); ok {
 			newList = append(newList, tryStmt)
+			m.countBangStmt(tryStmt)
 			bodyChanged = true
 			m.mark()
 			continue
 		}
-		if tryStmt, ok := m.matchAssignReturnErr(stmt, *list, i, vt, params); ok {
-			newList = append(newList, tryStmt)
+		if tryStmts, ok := m.matchAssignReturnErr(stmt, *list, i, vt, params); ok {
+			newList = append(newList, tryStmts...)
+			m.countBangStmts(tryStmts)
 			i += 1
 			bodyChanged = true
 			m.mark()
@@ -511,17 +518,25 @@ func (m *fileModernizer) propagateReturnErrStmtList(list *[]ast.Stmt, vt ast.Exp
 		}
 		if tryStmt, ok := m.matchAssignErrBang(stmt, *list, i, params); ok {
 			newList = append(newList, tryStmt)
+			m.countBangStmt(tryStmt)
 			i += 1
 			bodyChanged = true
 			m.mark()
-			m.errBangCount++
+			continue
+		}
+		if tryStmts, consumed, ok := m.matchAssignReturnErrGapped(stmt, *list, i, vt, params); ok {
+			newList = append(newList, tryStmts...)
+			m.countBangStmts(tryStmts)
+			i += consumed - 1
+			bodyChanged = true
+			m.mark()
 			continue
 		}
 		if tryStmt, ok := m.matchStandaloneErrBang(stmt, *list, i, vt, params); ok {
 			newList = append(newList, tryStmt)
+			m.countBangStmt(tryStmt)
 			bodyChanged = true
 			m.mark()
-			m.errBangCount++
 			continue
 		}
 		newList = append(newList, stmt)
@@ -540,23 +555,117 @@ func (m *fileModernizer) matchStandaloneErrBang(stmt ast.Stmt, list []ast.Stmt, 
 	if !ok || errName != "err" {
 		return nil, false
 	}
-	if len(ifStmt.Body.List) != 1 {
+	if !isReturnErrIf(ifStmt, errName, vt) {
 		return nil, false
 	}
-	ret, ok := ifStmt.Body.List[0].(*ast.ReturnStmt)
-	if !ok {
+	if !errBoundBeforeInStmts(list, i, errName, params) {
 		return nil, false
 	}
-	if !isReturnErrOnly(ret, errName) && (vt == nil || !isReturnWithErr(ret, errName)) {
+	if !lastErrBindIsValid(list, i, errName) {
 		return nil, false
 	}
-	if errDeclBeforeInStmts(list, i, errName, params) {
-		return nil, false
-	}
-	if errUsedInStmts(list, i+1, errName) || errAssignedLater(list, i+1, errName) {
+	if stmtsBetweenTouchErr(list, lastErrBindBefore(list, i, errName)+1, i, errName) {
 		return nil, false
 	}
 	return errBangStmt(errName), true
+}
+
+func isReturnErrIf(ifStmt *ast.IfStmt, errName string, vt ast.Expr) bool {
+	if ifStmt == nil || ifStmt.Init != nil || ifStmt.Else != nil {
+		return false
+	}
+	name, ok := errIdentFromCond(ifStmt.Cond)
+	if !ok || name != errName {
+		return false
+	}
+	if len(ifStmt.Body.List) != 1 {
+		return false
+	}
+	ret, ok := ifStmt.Body.List[0].(*ast.ReturnStmt)
+	if !ok {
+		return false
+	}
+	return isReturnErrOnly(ret, errName) || isErrorOnlyReturn(ret, errName) || (vt != nil && isReturnWithErr(ret, errName))
+}
+
+func errBoundBeforeInStmts(list []ast.Stmt, before int, name string, params []string) bool {
+	for _, p := range params {
+		if p == name {
+			return true
+		}
+	}
+	for j := 0; j < before; j++ {
+		if stmtDeclaresIdent(list[j], name) || stmtAssignsToIdent(list[j], name) {
+			return true
+		}
+	}
+	return false
+}
+
+func lastErrBindBefore(list []ast.Stmt, before int, name string) int {
+	last := -1
+	for j := 0; j < before; j++ {
+		if stmtDeclaresIdent(list[j], name) || stmtAssignsToIdent(list[j], name) {
+			last = j
+		}
+	}
+	return last
+}
+
+func lastErrBindIsValid(list []ast.Stmt, before int, name string) bool {
+	idx := lastErrBindBefore(list, before, name)
+	if idx < 0 {
+		return false
+	}
+	assign, ok := list[idx].(*ast.AssignStmt)
+	if !ok {
+		return true
+	}
+	if len(assign.Lhs) < 3 {
+		return true
+	}
+	last, ok := assign.Lhs[len(assign.Lhs)-1].(*ast.Ident)
+	return ok && last.Name == name
+}
+
+func stmtsBetweenTouchErr(list []ast.Stmt, start, end int, name string) bool {
+	for j := start; j < end; j++ {
+		if stmtTouchesErr(list[j], name) {
+			return true
+		}
+	}
+	return false
+}
+
+func stmtTouchesErr(stmt ast.Stmt, name string) bool {
+	return stmtUsesIdent(stmt, name) || stmtAssignsToIdent(stmt, name)
+}
+
+// val, err := call(); ...; if err != nil { return err } → val, err := call(); ...; err!
+// Lower priority than consecutive assign+call()! rewrites.
+func (m *fileModernizer) matchAssignReturnErrGapped(asg ast.Stmt, list []ast.Stmt, i int, vt ast.Expr, params []string) ([]ast.Stmt, int, bool) {
+	_, _, errLHS, ok := parseErrAssign(asg)
+	if !ok {
+		return nil, 0, false
+	}
+	errName := errLHS.Name
+	for j := i + 1; j < len(list); j++ {
+		if ifStmt, ok := list[j].(*ast.IfStmt); ok && isReturnErrIf(ifStmt, errName, vt) {
+			if j == i+1 {
+				return nil, 0, false
+			}
+			if stmtsBetweenTouchErr(list, i+1, j, errName) {
+				return nil, 0, false
+			}
+			out := append([]ast.Stmt{}, list[i:j]...)
+			out = append(out, errBangStmt(errName))
+			return out, j - i + 1, true
+		}
+		if stmtTouchesErr(list[j], errName) {
+			return nil, 0, false
+		}
+	}
+	return nil, 0, false
 }
 
 func errBangStmt(errName string) ast.Stmt {
@@ -629,7 +738,7 @@ func bangStmtFromErrAssign(assign *ast.AssignStmt, call *ast.CallExpr, errLHS *a
 	if len(nonErrLHS) == 0 {
 		return &ast.ExprStmt{X: bangExpr(call)}, true
 	}
-	if len(nonErrLHS) > 1 {
+	if len(assign.Lhs) >= 3 || len(nonErrLHS) > 1 {
 		return nil, false
 	}
 	if lhsShadowsParam(nonErrLHS[0], params) {
@@ -724,9 +833,6 @@ func (m *fileModernizer) matchIfInitReturnErr(stmt ast.Stmt, list []ast.Stmt, i 
 	if !isReturnErrOnly(ret, errName) && !isErrorOnlyReturn(ret, errName) && (vt == nil || !isReturnWithErr(ret, errName)) {
 		return nil, false
 	}
-	if errUsedInStmts(list, i+1, errName) {
-		return nil, false
-	}
 	return bangStmtFromErrAssign(assign, call, errLHS, list, i, params)
 }
 
@@ -791,9 +897,6 @@ func (m *fileModernizer) matchAssignErrBang(asg ast.Stmt, list []ast.Stmt, i int
 }
 
 func parseErrAssignCall(assign *ast.AssignStmt) (*ast.CallExpr, *ast.Ident, bool) {
-	if len(assign.Lhs) > 2 {
-		return nil, nil, false
-	}
 	if len(assign.Rhs) != 1 {
 		return nil, nil, false
 	}
@@ -817,15 +920,11 @@ func parseErrAssignCall(assign *ast.AssignStmt) (*ast.CallExpr, *ast.Ident, bool
 			return nil, nil, false
 		}
 	default:
-		for _, lhs := range assign.Lhs {
-			if id, ok := lhs.(*ast.Ident); ok && id.Name == "err" {
-				errLHS = id
-				break
-			}
-		}
-		if errLHS == nil {
+		last, ok := assign.Lhs[len(assign.Lhs)-1].(*ast.Ident)
+		if !ok || last.Name != "err" {
 			return nil, nil, false
 		}
+		errLHS = last
 	}
 	return call, errLHS, true
 }
@@ -842,8 +941,8 @@ func parseErrAssign(asg ast.Stmt) (*ast.AssignStmt, *ast.CallExpr, *ast.Ident, b
 	return assign, call, errLHS, true
 }
 
-// err := call(); if err != nil { return err }
-func (m *fileModernizer) matchAssignReturnErr(asg ast.Stmt, list []ast.Stmt, i int, vt ast.Expr, params []string) (ast.Stmt, bool) {
+// val, err := call(); if err != nil { return err } → val := call()! or val, err := call(); err!
+func (m *fileModernizer) matchAssignReturnErr(asg ast.Stmt, list []ast.Stmt, i int, vt ast.Expr, params []string) ([]ast.Stmt, bool) {
 	assign, call, errLHS, ok := parseErrAssign(asg)
 	if !ok {
 		return nil, false
@@ -852,27 +951,20 @@ func (m *fileModernizer) matchAssignReturnErr(asg ast.Stmt, list []ast.Stmt, i i
 		return nil, false
 	}
 	ifStmt, ok := list[i+1].(*ast.IfStmt)
-	if !ok || ifStmt.Init != nil || ifStmt.Else != nil {
+	if !ok || !isReturnErrIf(ifStmt, errLHS.Name, vt) {
 		return nil, false
 	}
-	errName, ok := errIdentFromCond(ifStmt.Cond)
-	if !ok || errName != errLHS.Name {
-		return nil, false
-	}
-	if len(ifStmt.Body.List) != 1 {
-		return nil, false
-	}
-	ret, ok := ifStmt.Body.List[0].(*ast.ReturnStmt)
-	if !ok {
-		return nil, false
-	}
-	if !isReturnErrOnly(ret, errName) && !isErrorOnlyReturn(ret, errName) && (vt == nil || !isReturnWithErr(ret, errName)) {
-		return nil, false
-	}
+	errName := errLHS.Name
 	if errUsedInStmts(list, i+2, errName) {
-		return nil, false
+		return []ast.Stmt{assign, errBangStmt(errName)}, true
 	}
-	return bangStmtFromErrAssign(assign, call, errLHS, list, i, params)
+	if stmt, ok := bangStmtFromErrAssign(assign, call, errLHS, list, i, params); ok {
+		return []ast.Stmt{stmt}, true
+	}
+	if len(assign.Lhs) >= 3 {
+		return []ast.Stmt{assign, errBangStmt(errName)}, true
+	}
+	return nil, false
 }
 
 func (m *fileModernizer) Visit(node ast.Node) ast.Visitor {
@@ -889,6 +981,38 @@ func (m *fileModernizer) Visit(node ast.Node) ast.Visitor {
 
 func (m *fileModernizer) mark() {
 	m.changed = true
+}
+
+func (m *fileModernizer) countBangStmts(stmts []ast.Stmt) {
+	for _, stmt := range stmts {
+		m.countBangStmt(stmt)
+	}
+}
+
+func (m *fileModernizer) countBangStmt(stmt ast.Stmt) {
+	switch s := stmt.(type) {
+	case *ast.ExprStmt:
+		m.countBangExpr(s.X)
+	case *ast.AssignStmt:
+		for _, rhs := range s.Rhs {
+			m.countBangExpr(rhs)
+		}
+	}
+}
+
+func (m *fileModernizer) countBangExpr(e ast.Expr) {
+	fe, ok := ast.Unparen(e).(*ast.ForceExpr)
+	if !ok {
+		return
+	}
+	switch x := ast.Unparen(fe.X).(type) {
+	case *ast.CallExpr:
+		m.callBangCount++
+	case *ast.Ident:
+		if x.Name == "err" {
+			m.errBangStmtCount++
+		}
+	}
 }
 
 func isErrorType(t ast.Expr) bool {
@@ -1030,17 +1154,20 @@ func (m *fileModernizer) modernizeStmtList(list []ast.Stmt, vt ast.Expr, params 
 		stmt := list[i]
 		if asg, ok := m.matchAssignErrCheck(stmt, list, i, vt, params); ok {
 			newList = append(newList, asg)
+			m.countBangStmt(asg)
 			i += 1
 			m.mark()
 			continue
 		}
 		if tryStmt, ok := m.matchIfInitErr(stmt, list, i, vt, params); ok {
 			newList = append(newList, tryStmt)
+			m.countBangStmt(tryStmt)
 			m.mark()
 			continue
 		}
 		if tryStmt, ok := m.matchIfAssignErr(stmt, list, i, vt, params); ok {
 			newList = append(newList, tryStmt)
+			m.countBangStmt(tryStmt)
 			m.mark()
 			continue
 		}

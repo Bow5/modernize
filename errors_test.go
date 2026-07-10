@@ -376,7 +376,7 @@ func ErrorToErr(err error) Err {
 	}
 }
 
-func TestModernizeSkipStandaloneErrBangWhenErrReused(t *testing.T) {
+func TestModernizeAssignErrBangWhenErrReused(t *testing.T) {
 	const src = `package p
 
 import (
@@ -408,11 +408,14 @@ func lockedOpen(path string) (*os.File, error) {
 		t.Fatal("expected signature conversion")
 	}
 	out := formatTestFile(fset, f)
-	if strings.Contains(out, "err!") {
-		t.Fatalf("should not emit standalone err! when err is reused:\n%s", out)
-	}
 	if !strings.Contains(out, "f, err := os.OpenFile") {
 		t.Fatalf("expected to keep err binding:\n%s", out)
+	}
+	if !strings.Contains(out, "err!") {
+		t.Fatalf("expected err! when err is reused later:\n%s", out)
+	}
+	if strings.Contains(out, "os.OpenFile(path, syscall.O_RDONLY, 0)!") {
+		t.Fatalf("should not collapse assign when err is reused:\n%s", out)
 	}
 }
 
@@ -653,5 +656,361 @@ func newEncrypt(key []byte) error {
 	}
 	if !strings.Contains(out, "key, err := GlobalKMS.GenerateKey()") {
 		t.Fatalf("expected original assign:\n%s", out)
+	}
+}
+
+func TestModernizeErrBangInErrorReturnFunc(t *testing.T) {
+	const src = `package p
+
+import "strconv"
+
+func run() error {
+	workerSize, err := strconv.Atoi("42")
+	if err != nil {
+		return err
+	}
+	_ = workerSize
+
+	x, err := strconv.Atoi("1")
+	if err != nil {
+		return err
+	}
+	_ = x
+
+	if err := fail(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func fail() error {
+	return nil
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, changed, err := modernizeParsedFile(fset, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected changes")
+	}
+	out := formatTestFile(fset, f)
+	if strings.Contains(out, "workerSize, err :=") || strings.Contains(out, "if err != nil") {
+		t.Fatalf("expected err! rewrites in error-returning func:\n%s", out)
+	}
+	if !strings.Contains(out, `workerSize := strconv.Atoi("42")!`) {
+		t.Fatalf("missing assign bang:\n%s", out)
+	}
+	if !strings.Contains(out, `x := strconv.Atoi("1")!`) {
+		t.Fatalf("missing second assign bang:\n%s", out)
+	}
+	if !strings.Contains(out, "fail()!") {
+		t.Fatalf("missing if-init bang:\n%s", out)
+	}
+}
+
+func TestModernizeAssignKeepErrWhenReused(t *testing.T) {
+	const src = `package p
+
+type G struct{}
+
+func (g *G) SetMatchETag(string) error {
+	return nil
+}
+
+func run(g *G) error {
+	if err := g.SetMatchETag("x"); err != nil {
+		return err
+	}
+	hr, err := fake()
+	if err != nil {
+		return err
+	}
+	_ = hr
+	_, err = other()
+	return err
+}
+
+func fake() (int, error) {
+	return 0, nil
+}
+
+func other() error {
+	return nil
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, changed, err := modernizeParsedFile(fset, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected changes")
+	}
+	out := formatTestFile(fset, f)
+	if !strings.Contains(out, `g.SetMatchETag("x")!`) {
+		t.Fatalf("missing if-init bang:\n%s", out)
+	}
+	if !strings.Contains(out, "hr, err := fake()") || !strings.Contains(out, "err!") {
+		t.Fatalf("expected assign kept with err!:\n%s", out)
+	}
+	if strings.Contains(out, "fake()!") {
+		t.Fatalf("should not collapse assign when err is reused:\n%s", out)
+	}
+}
+
+func TestModernizeAssignTripleReturnKeepErr(t *testing.T) {
+	const src = `package p
+
+type Opts struct{}
+type Info struct{}
+
+func batchReplicationOpts() (Opts, bool, error) {
+	return Opts{}, false, nil
+}
+
+func run() error {
+	putOpts, isMP, err := batchReplicationOpts()
+	if err != nil {
+		return err
+	}
+	_ = putOpts
+	if isMP {
+		_, err = other()
+		return err
+	}
+	return nil
+}
+
+func other() error {
+	return nil
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, changed, err := modernizeParsedFile(fset, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected changes")
+	}
+	out := formatTestFile(fset, f)
+	if !strings.Contains(out, "putOpts, isMP, err := batchReplicationOpts()") {
+		t.Fatalf("expected triple assign kept:\n%s", out)
+	}
+	if strings.Contains(out, "if err != nil") {
+		t.Fatalf("expected err! instead of if err check:\n%s", out)
+	}
+	if !strings.Contains(out, "err!") {
+		t.Fatalf("missing err!:\n%s", out)
+	}
+}
+
+func TestModernizeAssignReturnErrWithGap(t *testing.T) {
+	const src = `package p
+
+type RI struct {
+	mu int
+}
+
+func (ri *RI) MarshalMsg([]byte) ([]byte, error) {
+	return nil, nil
+}
+
+func (ri *RI) persist() error {
+	var data []byte
+	buf, err := ri.MarshalMsg(data)
+	ri.mu = 0
+	if err != nil {
+		return err
+	}
+	_ = buf
+	return nil
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, changed, err := modernizeParsedFile(fset, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected changes")
+	}
+	out := formatTestFile(fset, f)
+	if strings.Contains(out, "if err != nil") {
+		t.Fatalf("expected err! after gap:\n%s", out)
+	}
+	if !strings.Contains(out, "buf, err := ri.MarshalMsg(data)") || !strings.Contains(out, "ri.mu = 0") || !strings.Contains(out, "err!") {
+		t.Fatalf("expected assign, gap stmt, err!:\n%s", out)
+	}
+}
+
+func TestModernizeAssignTripleReturnWithBlank(t *testing.T) {
+	const src = `package p
+
+type Result struct{}
+type Info struct{}
+
+func LookupUserDN() (*Result, []string, error) {
+	return nil, nil, nil
+}
+
+func run() error {
+	_, ldapGroups, err := LookupUserDN()
+	if err != nil {
+		return err
+	}
+	_ = ldapGroups
+	return nil
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, changed, err := modernizeParsedFile(fset, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected changes")
+	}
+	out := formatTestFile(fset, f)
+	if strings.Contains(out, "LookupUserDN()!") {
+		t.Fatalf("should not collapse triple return:\n%s", out)
+	}
+	if !strings.Contains(out, "_, ldapGroups, err := LookupUserDN()") || !strings.Contains(out, "err!") {
+		t.Fatalf("expected assign + err!:\n%s", out)
+	}
+}
+
+func TestModernizeSkipErrNotLastInTripleAssign(t *testing.T) {
+	const src = `package p
+
+func Do() (any, error, bool) {
+	return nil, nil, false
+}
+
+func run() error {
+	val, err, _ := Do()
+	if err != nil {
+		return err
+	}
+	_ = val
+	return nil
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, changed, err := modernizeParsedFile(fset, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Fatalf("should not rewrite when err is not last lhs:\n%s", formatTestFile(fset, f))
+	}
+}
+
+func TestModernizeRewriteCounts(t *testing.T) {
+	const src = `package p
+
+import "strconv"
+
+func run() error {
+	x := strconv.Atoi("1")!
+
+	if err := fail(); err != nil {
+		return err
+	}
+
+	hr, err := fake()
+	if err != nil {
+		return err
+	}
+	_ = hr
+	return nil
+}
+
+func fail() error {
+	return nil
+}
+
+func fake() (int, error) {
+	return 0, nil
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, counts, _, err := modernizeParsedFile(fset, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts.callBang != 2 {
+		t.Fatalf("expected 2 call()!, got %d", counts.callBang)
+	}
+	if counts.errBang != 0 {
+		t.Fatalf("expected 0 err!, got %d", counts.errBang)
+	}
+}
+
+func TestModernizeRewriteCountsErrBang(t *testing.T) {
+	const src = `package p
+
+func run() error {
+	hr, err := fake()
+	if err != nil {
+		return err
+	}
+	_ = hr
+	_, err = other()
+	return err
+}
+
+func fake() (int, error) {
+	return 0, nil
+}
+
+func other() error {
+	return nil
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, counts, _, err := modernizeParsedFile(fset, f, filepath.Join(t.TempDir(), "p.go"), false, nil, nil, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts.callBang != 0 {
+		t.Fatalf("expected 0 call()!, got %d", counts.callBang)
+	}
+	if counts.errBang != 1 {
+		t.Fatalf("expected 1 err!, got %d", counts.errBang)
 	}
 }
