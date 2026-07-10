@@ -323,6 +323,7 @@ func modernizeNilReceivers(f *ast.File, files []*ast.File, cfg Config, modIdx *m
 		chains = optionalMethodChains(f, files, guardIdx)
 		chains += nilablePointerChains(f, files, returns, modIdx)
 		chains += nilableMethodGuards(f, files, returns, modIdx)
+		chains += rewriteIfNilableChainConditions(f, files, returns, modIdx)
 		chains += coalesceOptionalFieldsInCompositeLits(f)
 	}
 	if cfg.RemoveNilReceiverGuards {
@@ -340,15 +341,60 @@ func isNilablePointerType(t ast.Expr) bool {
 	return ok
 }
 
+type structFieldIndex struct {
+	fields map[string]map[string]ast.Expr
+}
+
+func buildStructFieldIndex(files []*ast.File) *structFieldIndex {
+	idx := &structFieldIndex{fields: map[string]map[string]ast.Expr{}}
+	for _, f := range files {
+		for _, decl := range f.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if !ok {
+					continue
+				}
+				st, ok := ts.Type.(*ast.StructType)
+				if !ok || st.Fields == nil {
+					continue
+				}
+				if idx.fields[ts.Name.Name] == nil {
+					idx.fields[ts.Name.Name] = map[string]ast.Expr{}
+				}
+				for _, field := range st.Fields.List {
+					for _, name := range field.Names {
+						idx.fields[ts.Name.Name][name.Name] = field.Type
+					}
+				}
+			}
+		}
+	}
+	return idx
+}
+
+func (idx *structFieldIndex) fieldType(typeName, field string) ast.Expr {
+	if idx == nil || typeName == "" || field == "" {
+		return nil
+	}
+	return idx.fields[typeName][field]
+}
+
 type funcVarIndex struct {
 	byFunc map[*ast.FuncDecl]map[string]ast.Expr
 	fnFile map[*ast.FuncDecl]*ast.File
+	structs *structFieldIndex
 }
 
 func buildFuncVarIndex(files []*ast.File, returns *returnTypeIndex, modIdx *moduleFuncIndex) *funcVarIndex {
+	structs := buildStructFieldIndex(files)
 	idx := &funcVarIndex{
-		byFunc: map[*ast.FuncDecl]map[string]ast.Expr{},
-		fnFile: map[*ast.FuncDecl]*ast.File{},
+		byFunc:  map[*ast.FuncDecl]map[string]ast.Expr{},
+		fnFile:  map[*ast.FuncDecl]*ast.File{},
+		structs: structs,
 	}
 	for _, f := range files {
 		for _, decl := range f.Decls {
@@ -356,17 +402,24 @@ func buildFuncVarIndex(files []*ast.File, returns *returnTypeIndex, modIdx *modu
 			if !ok || fn.Body == nil {
 				continue
 			}
-			idx.byFunc[fn] = buildFuncVars(fn, f, returns, modIdx)
+			idx.byFunc[fn] = buildFuncVars(fn, f, returns, modIdx, structs)
 			idx.fnFile[fn] = f
 		}
 	}
 	return idx
 }
 
-func buildFuncVars(fn *ast.FuncDecl, f *ast.File, returns *returnTypeIndex, modIdx *moduleFuncIndex) map[string]ast.Expr {
+func buildFuncVars(fn *ast.FuncDecl, f *ast.File, returns *returnTypeIndex, modIdx *moduleFuncIndex, structs *structFieldIndex) map[string]ast.Expr {
 	vars := map[string]ast.Expr{}
 	if fn.Type != nil && fn.Type.Params != nil {
 		for _, tf := range flattenFields("param", fn.Name.Name, fn.Type.Params) {
+			if tf.key.name != "" {
+				vars[tf.key.name] = tf.typ
+			}
+		}
+	}
+	if fn.Type != nil && fn.Type.Results != nil {
+		for _, tf := range flattenFields("result", fn.Name.Name, fn.Type.Results) {
 			if tf.key.name != "" {
 				vars[tf.key.name] = tf.typ
 			}
@@ -389,7 +442,7 @@ func buildFuncVars(fn *ast.FuncDecl, f *ast.File, returns *returnTypeIndex, modI
 				} else {
 					rhs = rhsAt(x.Rhs, i)
 				}
-				if typ := resolveExprType(returns, modIdx, f, vars, rhs); typ != nil {
+				if typ := resolveExprType(returns, modIdx, f, structs, fn, vars, rhs); typ != nil {
 					vars[id.Name] = typ
 				}
 			}
@@ -408,7 +461,7 @@ func buildFuncVars(fn *ast.FuncDecl, f *ast.File, returns *returnTypeIndex, modI
 						continue
 					}
 					if i < len(vs.Values) {
-						if typ := resolveExprType(returns, modIdx, f, vars, vs.Values[i]); typ != nil {
+						if typ := resolveExprType(returns, modIdx, f, structs, fn, vars, vs.Values[i]); typ != nil {
 							vars[name.Name] = typ
 						}
 					}
@@ -420,24 +473,45 @@ func buildFuncVars(fn *ast.FuncDecl, f *ast.File, returns *returnTypeIndex, modI
 	return vars
 }
 
-func resolveExprType(returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, vars map[string]ast.Expr, e ast.Expr) ast.Expr {
+func resolveExprType(returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, structs *structFieldIndex, fn *ast.FuncDecl, vars map[string]ast.Expr, e ast.Expr) ast.Expr {
 	switch x := ast.Unparen(e).(type) {
 	case *ast.Ident:
 		return vars[x.Name]
+	case *ast.SelectorExpr:
+		if id, ok := x.X.(*ast.Ident); ok {
+			if typ := vars[id.Name]; typ != nil {
+				return typ
+			}
+			if fn != nil && fn.Recv != nil && structs != nil {
+				recvName, recvType, ok := recvNameAndType(fn.Recv)
+				if ok && id.Name == recvName {
+					return structs.fieldType(recvType, x.Sel.Name)
+				}
+			}
+		}
+		if inner, ok := x.X.(*ast.SelectorExpr); ok {
+			innerTyp := resolveExprType(returns, modIdx, f, structs, fn, vars, inner)
+			if innerTyp != nil && structs != nil {
+				if ft := structs.fieldType(typeBaseName(innerTyp), x.Sel.Name); ft != nil {
+					return ft
+				}
+			}
+		}
+		return nil
 	case *ast.CallExpr:
 		return resolveCallResultType(returns, modIdx, f, x)
 	case *ast.NullCondExpr:
-		return resolveExprType(returns, modIdx, f, vars, x.X)
+		return resolveExprType(returns, modIdx, f, structs, fn, vars, x.X)
 	default:
 		return nil
 	}
 }
 
-func receiverTypeForSelector(returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, vars map[string]ast.Expr, sel *ast.SelectorExpr) ast.Expr {
+func receiverTypeForSelector(returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, structs *structFieldIndex, fn *ast.FuncDecl, vars map[string]ast.Expr, sel *ast.SelectorExpr) ast.Expr {
 	if sel == nil {
 		return nil
 	}
-	return resolveExprType(returns, modIdx, f, vars, sel.X)
+	return resolveExprType(returns, modIdx, f, structs, fn, vars, sel.X)
 }
 
 func selectorRootIdent(e ast.Expr) string {
@@ -647,6 +721,27 @@ func nilableChainsInStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *return
 	return nilableChainsInNode(fn, varIdx, returns, modIdx, f, stmt, narrowed)
 }
 
+func isAssignLHS(sel *ast.SelectorExpr, root ast.Node) bool {
+	if sel == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(root, func(n ast.Node) bool {
+		assign, ok := n.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for _, lhs := range assign.Lhs {
+			if ast.Unparen(lhs) == sel {
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+	return found
+}
+
 func isMethodSelector(sel *ast.SelectorExpr, root ast.Node) bool {
 	if sel == nil {
 		return false
@@ -676,24 +771,24 @@ func nilableChainsInNode(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *return
 		if !ok {
 			return true
 		}
-		if isMethodSelector(sel, node) {
+		if isMethodSelector(sel, node) || isAssignLHS(sel, node) {
 			return true
 		}
 		vars := varIdx.byFunc[fn]
-		count += processNilableSelector(sel, returns, modIdx, varIdx.fnFile[fn], vars, narrowed)
+		count += processNilableSelector(sel, returns, modIdx, varIdx.fnFile[fn], varIdx.structs, fn, vars, narrowed)
 		return true
 	})
 	return count
 }
 
-func processNilableSelector(sel *ast.SelectorExpr, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, vars map[string]ast.Expr, narrowed map[string]bool) int {
+func processNilableSelector(sel *ast.SelectorExpr, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, structs *structFieldIndex, fn *ast.FuncDecl, vars map[string]ast.Expr, narrowed map[string]bool) int {
 	if sel == nil || sel.Sel == nil {
 		return 0
 	}
 	if root := selectorRootIdent(sel.X); root != "" && narrowed[root] {
 		return 0
 	}
-	if !isNilablePointerType(receiverTypeForSelector(returns, modIdx, f, vars, sel)) {
+	if !isNilablePointerType(receiverTypeForSelector(returns, modIdx, f, structs, fn, vars, sel)) {
 		return 0
 	}
 	if alreadyNullCond(sel.X) {
@@ -712,6 +807,7 @@ func nilableMethodGuards(f *ast.File, files []*ast.File, returns *returnTypeInde
 			continue
 		}
 		fn.Body.List, count = rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, fn.Body.List, map[string]bool{}, count)
+		count += rewriteFuncLitBodies(fn, varIdx, returns, modIdx, f, fn.Body.List, map[string]bool{}, 0)
 	}
 	return count
 }
@@ -725,6 +821,27 @@ func rewriteNilableMethodStmts(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *
 		narrowed = narrowAfterStmt(stmt, narrowed)
 	}
 	return out, count
+}
+
+func rewriteFuncLitBodies(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, stmts []ast.Stmt, narrowed map[string]bool, count int) int {
+	var walk func([]ast.Stmt)
+	walk = func(list []ast.Stmt) {
+		for _, stmt := range list {
+			ast.Inspect(stmt, func(n ast.Node) bool {
+				fl, ok := n.(*ast.FuncLit)
+				if !ok || fl.Body == nil {
+					return true
+				}
+				var added int
+				fl.Body.List, added = rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, fl.Body.List, copyBoolMap(narrowed), 0)
+				count += added
+				walk(fl.Body.List)
+				return true
+			})
+		}
+	}
+	walk(stmts)
+	return count
 }
 
 func rewriteNilableMethodStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, stmt ast.Stmt, narrowed map[string]bool) ([]ast.Stmt, int) {
@@ -773,9 +890,13 @@ func rewriteNilableMethodStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *r
 			return []ast.Stmt{guard}, 1
 		}
 	case *ast.AssignStmt:
+		if len(s.Lhs) == 1 {
+			if guard, ok := nilableFieldAssignGuard(fn, varIdx, returns, modIdx, f, s, narrowed); ok {
+				return []ast.Stmt{guard}, 1
+			}
+		}
 		if len(s.Rhs) == 1 {
-			if guard, ok := nilableMethodGuardFromCall(fn, varIdx, returns, modIdx, f, s.Rhs[0], narrowed); ok {
-				guard.Body.List = []ast.Stmt{s}
+			if guard, ok := nilableMethodGuardFromAssign(fn, varIdx, returns, modIdx, f, s, narrowed); ok {
 				return []ast.Stmt{guard}, 1
 			}
 		}
@@ -796,7 +917,7 @@ func nilableMethodGuardFromCall(fn *ast.FuncDecl, varIdx *funcVarIndex, returns 
 	if root := selectorRootIdent(sel.X); root != "" && narrowed[root] {
 		return nil, false
 	}
-	if !isNilablePointerType(receiverTypeForSelector(returns, modIdx, varIdx.fnFile[fn], vars, sel)) {
+	if !isNilablePointerType(receiverTypeForSelector(returns, modIdx, varIdx.fnFile[fn], varIdx.structs, fn, vars, sel)) {
 		return nil, false
 	}
 	recv := sel.X
@@ -818,6 +939,155 @@ func nilableMethodGuardFromCall(fn *ast.FuncDecl, varIdx *funcVarIndex, returns 
 			},
 		}}},
 	}, true
+}
+
+func nilableMethodGuardFromAssign(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, assign *ast.AssignStmt, narrowed map[string]bool) (*ast.IfStmt, bool) {
+	call, ok := ast.Unparen(assign.Rhs[0]).(*ast.CallExpr)
+	if !ok {
+		return nil, false
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel == nil {
+		return nil, false
+	}
+	guard, ok := nilableMethodGuardFromCall(fn, varIdx, returns, modIdx, f, call, narrowed)
+	if !ok {
+		return nil, false
+	}
+	guard.Body.List = []ast.Stmt{&ast.AssignStmt{
+		Tok: assign.Tok,
+		Lhs: assign.Lhs,
+		Rhs: []ast.Expr{&ast.CallExpr{
+			Fun:  &ast.SelectorExpr{X: &ast.Ident{Name: "_recv"}, Sel: sel.Sel},
+			Args: call.Args,
+		}},
+	}}
+	return guard, true
+}
+
+func nilableFieldAssignGuard(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, assign *ast.AssignStmt, narrowed map[string]bool) (*ast.IfStmt, bool) {
+	sel, ok := ast.Unparen(assign.Lhs[0]).(*ast.SelectorExpr)
+	if !ok || sel.Sel == nil || len(assign.Rhs) != 1 {
+		return nil, false
+	}
+	vars := varIdx.byFunc[fn]
+	if root := selectorRootIdent(sel.X); root != "" && narrowed[root] {
+		return nil, false
+	}
+	if !isNilablePointerType(receiverTypeForSelector(returns, modIdx, varIdx.fnFile[fn], varIdx.structs, fn, vars, sel)) {
+		return nil, false
+	}
+	recv := sel.X
+	return &ast.IfStmt{
+		Init: &ast.AssignStmt{
+			Tok: token.DEFINE,
+			Lhs: []ast.Expr{&ast.Ident{Name: "_recv"}},
+			Rhs: []ast.Expr{recv},
+		},
+		Cond: &ast.BinaryExpr{
+			X:  &ast.Ident{Name: "_recv"},
+			Op: token.NEQ,
+			Y:  &ast.Ident{Name: "nil"},
+		},
+		Body: &ast.BlockStmt{List: []ast.Stmt{&ast.AssignStmt{
+			Tok: assign.Tok,
+			Lhs: []ast.Expr{&ast.SelectorExpr{X: &ast.Ident{Name: "_recv"}, Sel: sel.Sel}},
+			Rhs: assign.Rhs,
+		}}},
+	}, true
+}
+
+func nilableChainCallRoot(expr ast.Expr) ast.Expr {
+	if nc, ok := ast.Unparen(expr).(*ast.NullCondExpr); ok {
+		return nc.X
+	}
+	sel, ok := expr.(*ast.SelectorExpr)
+	if !ok {
+		return nil
+	}
+	return nilableChainCallRoot(sel.X)
+}
+
+func rebuildSelectorChain(expr ast.Expr, recv ast.Expr) ast.Expr {
+	if _, ok := ast.Unparen(expr).(*ast.NullCondExpr); ok {
+		return recv
+	}
+	sel, ok := expr.(*ast.SelectorExpr)
+	if !ok {
+		return expr
+	}
+	return &ast.SelectorExpr{X: rebuildSelectorChain(sel.X, recv), Sel: sel.Sel}
+}
+
+func rewriteNilableChainCompare(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, expr ast.Expr) (ast.Stmt, ast.Expr, bool) {
+	be, ok := expr.(*ast.BinaryExpr)
+	if !ok {
+		return nil, expr, false
+	}
+	root := nilableChainCallRoot(be.X)
+	if root == nil {
+		return nil, expr, false
+	}
+	init := &ast.AssignStmt{
+		Tok: token.DEFINE,
+		Lhs: []ast.Expr{&ast.Ident{Name: "_recv"}},
+		Rhs: []ast.Expr{root},
+	}
+	recv := &ast.Ident{Name: "_recv"}
+	cond := &ast.BinaryExpr{
+		X: &ast.BinaryExpr{
+			X:  recv,
+			Op: token.NEQ,
+			Y:  &ast.Ident{Name: "nil"},
+		},
+		Op: token.LAND,
+		Y: &ast.BinaryExpr{
+			X:  rebuildSelectorChain(be.X, recv),
+			Op: be.Op,
+			Y:  be.Y,
+		},
+	}
+	return init, cond, true
+}
+
+func rewriteNilableChainCondition(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, cond ast.Expr) (ast.Stmt, ast.Expr, bool) {
+	if be, ok := cond.(*ast.BinaryExpr); ok && be.Op == token.LAND {
+		if init, right, ok := rewriteNilableChainCompare(fn, varIdx, returns, modIdx, f, be.Y); ok {
+			return init, &ast.BinaryExpr{X: be.X, Op: token.LAND, Y: right}, true
+		}
+		if init, left, ok := rewriteNilableChainCompare(fn, varIdx, returns, modIdx, f, be.X); ok {
+			return init, &ast.BinaryExpr{X: left, Op: token.LAND, Y: be.Y}, true
+		}
+	}
+	return rewriteNilableChainCompare(fn, varIdx, returns, modIdx, f, cond)
+}
+
+func rewriteIfNilableChainConditions(f *ast.File, files []*ast.File, returns *returnTypeIndex, modIdx *moduleFuncIndex) int {
+	varIdx := buildFuncVarIndex(files, returns, modIdx)
+	count := 0
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			ifs, ok := n.(*ast.IfStmt)
+			if !ok || ifs.Cond == nil {
+				return true
+			}
+			init, cond, ok := rewriteNilableChainCondition(fn, varIdx, returns, modIdx, f, ifs.Cond)
+			if !ok {
+				return true
+			}
+			if ifs.Init == nil {
+				ifs.Init = init
+			}
+			ifs.Cond = cond
+			count++
+			return true
+		})
+	}
+	return count
 }
 
 func coalesceOptionalFieldsInCompositeLits(f *ast.File) int {

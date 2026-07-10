@@ -559,6 +559,20 @@ func (a *ptrAnnotator) markAssignTargetNilable(lhs ast.Expr, owner string, fn *a
 				return true
 			}
 		}
+		if fn != nil && fn.Type != nil && fn.Type.Results != nil {
+			for _, tf := range flattenFields("result", fn.Name.Name, fn.Type.Results) {
+				if tf.key.name != e.Name {
+					continue
+				}
+				if a.nilable[tf.key] {
+					delete(a.strictResult, tf.key)
+					return false
+				}
+				a.nilable[tf.key] = true
+				delete(a.strictResult, tf.key)
+				return true
+			}
+		}
 		return false
 	case *ast.SelectorExpr:
 		field := e.Sel.Name
@@ -651,6 +665,36 @@ func (a *ptrAnnotator) propagateNilableFromCalleeReturnsOnce() bool {
 					if a.markAssignTargetNilable(lhs, owner, curFunc) {
 						changed = true
 					}
+				}
+			case *ast.CompositeLit:
+				typeName := compositeLitTypeName(x)
+				if typeName == "" {
+					return true
+				}
+				for _, elt := range x.Elts {
+					kv, ok := elt.(*ast.KeyValueExpr)
+					if !ok {
+						continue
+					}
+					field, ok := kv.Key.(*ast.Ident)
+					if !ok {
+						continue
+					}
+					call, ok := ast.Unparen(kv.Value).(*ast.CallExpr)
+					if !ok {
+						continue
+					}
+					if _, ok := a.calleeResultKey(call, 0); !ok {
+						continue
+					}
+					key := ptrSiteKey{kind: "field", owner: typeName, name: field.Name, index: -1}
+					if a.typeNode[key] == nil {
+						continue
+					}
+					if !a.nilable[key] {
+						changed = true
+					}
+					a.nilable[key] = true
 				}
 			}
 			return true
