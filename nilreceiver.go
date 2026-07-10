@@ -541,7 +541,11 @@ func buildFuncVars(fn *ast.FuncDecl, f *ast.File, returns *returnTypeIndex, modI
 					}
 				}
 				if typ := resolveExprType(returns, modIdx, f, structs, fn, vars, pkgVars, rhs); typ != nil {
-					if isStarDerefExpr(rhs) {
+					if existing, ok := vars[id.Name]; ok && !isNilablePointerType(existing) {
+						if isStarDerefExpr(rhs) {
+							vars[id.Name] = unwrapAssignableType(typ)
+						}
+					} else if isStarDerefExpr(rhs) {
 						vars[id.Name] = unwrapAssignableType(typ)
 					} else {
 						vars[id.Name] = typ
@@ -1827,17 +1831,19 @@ func defaultReturnStmt(fn *ast.FuncDecl) ast.Stmt {
 	if fn == nil || fn.Type == nil || fn.Type.Results == nil {
 		return nil
 	}
-	flat := flattenFields("result", fn.Name.Name, fn.Type.Results)
-	if len(flat) == 0 {
-		return nil
-	}
-	results := make([]ast.Expr, len(flat))
-	for i, tf := range flat {
-		if tf.key.name != "" {
-			results[i] = &ast.Ident{Name: tf.key.name}
-			continue
+	var results []ast.Expr
+	for _, field := range fn.Type.Results.List {
+		n := max(1, len(field.Names))
+		for i := 0; i < n; i++ {
+			if i < len(field.Names) && field.Names[i].Name != "" {
+				results = append(results, &ast.Ident{Name: field.Names[i].Name})
+				continue
+			}
+			results = append(results, zeroExprForType(field.Type))
 		}
-		results[i] = zeroExprForType(tf.typ)
+	}
+	if len(results) == 0 {
+		return nil
 	}
 	return &ast.ReturnStmt{Results: results}
 }
