@@ -298,12 +298,18 @@ func fieldHasOmitempty(field *ast.Field) bool {
 
 func (a *ptrAnnotator) scanNilEvidence(f *ast.File) {
 	var curFunc *ast.FuncDecl
+	var recvName string
 	ast.Inspect(f, func(n ast.Node) bool {
 		switch x := n.(type) {
 		case *ast.FuncDecl:
 			curFunc = x
+			recvName = recvParamName(x)
 		case *ast.FuncLit:
 			return false
+		case *ast.IfStmt:
+			if isNilReceiverGuard(x, recvName) {
+				return false
+			}
 		case *ast.AssignStmt:
 			a.scanAssign(x, curFunc)
 		case *ast.ReturnStmt:
@@ -315,6 +321,16 @@ func (a *ptrAnnotator) scanNilEvidence(f *ast.File) {
 		}
 		return true
 	})
+}
+
+func recvParamName(fn *ast.FuncDecl) string {
+	if fn == nil || fn.Recv == nil || len(fn.Recv.List) == 0 || len(fn.Recv.List[0].Names) == 0 {
+		return ""
+	}
+	if plainStarType(fn.Recv.List[0].Type) == nil {
+		return ""
+	}
+	return fn.Recv.List[0].Names[0].Name
 }
 
 func (a *ptrAnnotator) scanAssign(as *ast.AssignStmt, fn *ast.FuncDecl) {

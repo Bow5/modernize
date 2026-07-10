@@ -209,6 +209,37 @@ func Verify() (*Config, *RemoteErr) {
 	}
 }
 
+func TestPtrAnnotatorSkipsNilReceiverGuardReturn(t *testing.T) {
+	const src = `package p
+
+type tracer struct{ Subroute string }
+
+func (c *tracer) subroute(s string) *tracer {
+	if c == nil {
+		return nil
+	}
+	c2 := *c
+	c2.Subroute = s
+	return &c2
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ann := newPtrAnnotator(fset, []*ast.File{f})
+	ann.analyze()
+	key := ptrSiteKey{kind: "result", owner: "subroute", index: 0}
+	if ann.nilable[key] {
+		t.Fatal("nil-receiver guard return nil should not mark result nilable")
+	}
+	changed, _ := applyPtrAnnotations(fset, []*ast.File{f})
+	if changed[0] {
+		t.Fatal("expected no pointer type rewrite")
+	}
+}
+
 func TestPtrAnnotatorNilReturnWithNonNilPath(t *testing.T) {
 	const src = `package p
 
