@@ -21,7 +21,19 @@ func TestConfigForNilableStep(t *testing.T) {
 		t.Fatalf("unexpected step: %s", step.name)
 	}
 	got := step.stepConfig(base)
-	if !got.NilablePointersAnnotate || got.ErrBangSignatures || got.ShorthandTypes {
+	if !got.NilablePointersAnnotate || got.ErrBangSignatures || got.ShorthandTypes || got.RemoveNilReceiverGuards {
+		t.Fatalf("unexpected step config: %+v", got)
+	}
+}
+
+func TestConfigForNilReceiverStep(t *testing.T) {
+	base := DefaultConfig()
+	step := modernizeSteps[2] // nil_receivers
+	if step.name != "nil_receivers" {
+		t.Fatalf("unexpected step: %s", step.name)
+	}
+	got := step.stepConfig(base)
+	if !got.RemoveNilReceiverGuards || !got.OptionalMethodChains || got.NilablePointersAnnotate {
 		t.Fatalf("unexpected step config: %+v", got)
 	}
 }
@@ -42,7 +54,7 @@ func TestFindVCSRootGit(t *testing.T) {
 }
 
 func TestModernizeStepOrder(t *testing.T) {
-	want := []string{"formatting", "nilable_pointers", "err_bang", "structured_errors", "shorthand_types"}
+	want := []string{"formatting", "nilable_pointers", "nil_receivers", "err_bang", "structured_errors", "shorthand_types"}
 	if len(modernizeSteps) != len(want) {
 		t.Fatalf("got %d steps, want %d", len(modernizeSteps), len(want))
 	}

@@ -37,16 +37,26 @@ var modernizeSteps = []modernizeStep{
 		name:      "nilable_pointers",
 		commitMsg: "modernize: nilable pointer annotations",
 		enabled: func(c Config) bool {
-			return c.NilablePointersGoMod || c.NilablePointersGenDisable || c.NilablePointersAnnotate ||
-				c.RemoveNilReceiverGuards || c.OptionalMethodChains
+			return c.NilablePointersGoMod || c.NilablePointersGenDisable || c.NilablePointersAnnotate
 		},
 		stepConfig: func(base Config) Config {
 			return Config{
 				NilablePointersGoMod:      base.NilablePointersGoMod,
 				NilablePointersGenDisable: base.NilablePointersGenDisable,
 				NilablePointersAnnotate:   base.NilablePointersAnnotate,
-				RemoveNilReceiverGuards:   base.RemoveNilReceiverGuards,
-				OptionalMethodChains:      base.OptionalMethodChains,
+			}
+		},
+	},
+	{
+		name:      "nil_receivers",
+		commitMsg: "modernize: remove nil-receiver guards and optional ?. chains",
+		enabled: func(c Config) bool {
+			return c.RemoveNilReceiverGuards || c.OptionalMethodChains
+		},
+		stepConfig: func(base Config) Config {
+			return Config{
+				RemoveNilReceiverGuards: base.RemoveNilReceiverGuards,
+				OptionalMethodChains:    base.OptionalMethodChains,
 			}
 		},
 	},
