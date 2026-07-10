@@ -473,6 +473,17 @@ func buildFuncVars(fn *ast.FuncDecl, f *ast.File, returns *returnTypeIndex, modI
 	return vars
 }
 
+func fieldTypeFromReceiver(structs *structFieldIndex, recvTyp ast.Expr, field string) ast.Expr {
+	if structs == nil {
+		return nil
+	}
+	typeName := typeBaseName(recvTyp)
+	if typeName == "" {
+		return nil
+	}
+	return structs.fieldType(typeName, field)
+}
+
 func resolveExprType(returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, structs *structFieldIndex, fn *ast.FuncDecl, vars map[string]ast.Expr, e ast.Expr) ast.Expr {
 	switch x := ast.Unparen(e).(type) {
 	case *ast.Ident:
@@ -480,7 +491,9 @@ func resolveExprType(returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.F
 	case *ast.SelectorExpr:
 		if id, ok := x.X.(*ast.Ident); ok {
 			if typ := vars[id.Name]; typ != nil {
-				return typ
+				if ft := fieldTypeFromReceiver(structs, typ, x.Sel.Name); ft != nil {
+					return ft
+				}
 			}
 			if fn != nil && fn.Recv != nil && structs != nil {
 				recvName, recvType, ok := recvNameAndType(fn.Recv)
@@ -491,10 +504,8 @@ func resolveExprType(returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.F
 		}
 		if inner, ok := x.X.(*ast.SelectorExpr); ok {
 			innerTyp := resolveExprType(returns, modIdx, f, structs, fn, vars, inner)
-			if innerTyp != nil && structs != nil {
-				if ft := structs.fieldType(typeBaseName(innerTyp), x.Sel.Name); ft != nil {
-					return ft
-				}
+			if ft := fieldTypeFromReceiver(structs, innerTyp, x.Sel.Name); ft != nil {
+				return ft
 			}
 		}
 		return nil
@@ -1019,9 +1030,19 @@ func rebuildSelectorChain(expr ast.Expr, recv ast.Expr) ast.Expr {
 	return &ast.SelectorExpr{X: rebuildSelectorChain(sel.X, recv), Sel: sel.Sel}
 }
 
+func hasNullCondChain(expr ast.Expr) bool {
+	if _, ok := ast.Unparen(expr).(*ast.NullCondExpr); ok {
+		return true
+	}
+	if sel, ok := expr.(*ast.SelectorExpr); ok {
+		return hasNullCondChain(sel.X)
+	}
+	return false
+}
+
 func rewriteNilableChainCompare(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, expr ast.Expr) (ast.Stmt, ast.Expr, bool) {
 	be, ok := expr.(*ast.BinaryExpr)
-	if !ok {
+	if !ok || !hasNullCondChain(be.X) {
 		return nil, expr, false
 	}
 	root := nilableChainCallRoot(be.X)
