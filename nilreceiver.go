@@ -322,6 +322,8 @@ func modernizeNilReceivers(f *ast.File, files []*ast.File, cfg Config, modIdx *m
 	if cfg.OptionalMethodChains {
 		chains = optionalMethodChains(f, files, guardIdx)
 		chains += nilablePointerChains(f, files, returns, modIdx)
+		chains += nilableMethodGuards(f, files, returns, modIdx)
+		chains += coalesceOptionalFieldsInCompositeLits(f)
 	}
 	if cfg.RemoveNilReceiverGuards {
 		guards = removeNilReceiverGuards(f)
@@ -645,6 +647,25 @@ func nilableChainsInStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *return
 	return nilableChainsInNode(fn, varIdx, returns, modIdx, f, stmt, narrowed)
 }
 
+func isMethodSelector(sel *ast.SelectorExpr, root ast.Node) bool {
+	if sel == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(root, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if s, ok := call.Fun.(*ast.SelectorExpr); ok && s == sel {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
 func nilableChainsInNode(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, node ast.Node, narrowed map[string]bool) int {
 	count := 0
 	ast.Inspect(node, func(n ast.Node) bool {
@@ -653,6 +674,9 @@ func nilableChainsInNode(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *return
 		}
 		sel, ok := n.(*ast.SelectorExpr)
 		if !ok {
+			return true
+		}
+		if isMethodSelector(sel, node) {
 			return true
 		}
 		vars := varIdx.byFunc[fn]
@@ -677,4 +701,143 @@ func processNilableSelector(sel *ast.SelectorExpr, returns *returnTypeIndex, mod
 	}
 	sel.X = wrapNullCond(sel.X)
 	return 1
+}
+
+func nilableMethodGuards(f *ast.File, files []*ast.File, returns *returnTypeIndex, modIdx *moduleFuncIndex) int {
+	varIdx := buildFuncVarIndex(files, returns, modIdx)
+	count := 0
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		fn.Body.List, count = rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, fn.Body.List, map[string]bool{}, count)
+	}
+	return count
+}
+
+func rewriteNilableMethodStmts(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, stmts []ast.Stmt, narrowed map[string]bool, count int) ([]ast.Stmt, int) {
+	var out []ast.Stmt
+	for _, stmt := range stmts {
+		rewritten, stmtCount := rewriteNilableMethodStmt(fn, varIdx, returns, modIdx, f, stmt, narrowed)
+		count += stmtCount
+		out = append(out, rewritten...)
+		narrowed = narrowAfterStmt(stmt, narrowed)
+	}
+	return out, count
+}
+
+func rewriteNilableMethodStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, stmt ast.Stmt, narrowed map[string]bool) ([]ast.Stmt, int) {
+	switch s := stmt.(type) {
+	case *ast.BlockStmt:
+		list, n := rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, s.List, copyBoolMap(narrowed), 0)
+		s.List = list
+		return []ast.Stmt{s}, n
+	case *ast.IfStmt:
+		count := 0
+		inner := copyBoolMap(narrowed)
+		if id, ok := exitOnNilIdent(s); ok {
+			inner[id] = true
+		} else if id, ok := nonNilBranchIdent(s); ok {
+			inner[id] = true
+		} else if id, ok := assignOnNilIdent(s); ok {
+			inner[id] = true
+		}
+		if s.Body != nil {
+			list, n := rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, s.Body.List, inner, 0)
+			s.Body.List = list
+			count += n
+		}
+		if s.Else != nil {
+			elseStmts, n := rewriteNilableMethodStmt(fn, varIdx, returns, modIdx, f, s.Else, narrowed)
+			count += n
+			if len(elseStmts) == 1 {
+				s.Else = elseStmts[0]
+			}
+		}
+		return []ast.Stmt{s}, count
+	case *ast.ForStmt:
+		if s.Body != nil {
+			list, n := rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, s.Body.List, copyBoolMap(narrowed), 0)
+			s.Body.List = list
+			return []ast.Stmt{s}, n
+		}
+	case *ast.RangeStmt:
+		if s.Body != nil {
+			list, n := rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, s.Body.List, copyBoolMap(narrowed), 0)
+			s.Body.List = list
+			return []ast.Stmt{s}, n
+		}
+	case *ast.ExprStmt:
+		if guard, ok := nilableMethodGuardFromCall(fn, varIdx, returns, modIdx, f, s.X, narrowed); ok {
+			return []ast.Stmt{guard}, 1
+		}
+	case *ast.AssignStmt:
+		if len(s.Rhs) == 1 {
+			if guard, ok := nilableMethodGuardFromCall(fn, varIdx, returns, modIdx, f, s.Rhs[0], narrowed); ok {
+				guard.Body.List = []ast.Stmt{s}
+				return []ast.Stmt{guard}, 1
+			}
+		}
+	}
+	return []ast.Stmt{stmt}, 0
+}
+
+func nilableMethodGuardFromCall(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, expr ast.Expr, narrowed map[string]bool) (*ast.IfStmt, bool) {
+	call, ok := ast.Unparen(expr).(*ast.CallExpr)
+	if !ok {
+		return nil, false
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel == nil {
+		return nil, false
+	}
+	vars := varIdx.byFunc[fn]
+	if root := selectorRootIdent(sel.X); root != "" && narrowed[root] {
+		return nil, false
+	}
+	if !isNilablePointerType(receiverTypeForSelector(returns, modIdx, varIdx.fnFile[fn], vars, sel)) {
+		return nil, false
+	}
+	recv := sel.X
+	return &ast.IfStmt{
+		Init: &ast.AssignStmt{
+			Tok: token.DEFINE,
+			Lhs: []ast.Expr{&ast.Ident{Name: "_recv"}},
+			Rhs: []ast.Expr{recv},
+		},
+		Cond: &ast.BinaryExpr{
+			X:  &ast.Ident{Name: "_recv"},
+			Op: token.NEQ,
+			Y:  &ast.Ident{Name: "nil"},
+		},
+		Body: &ast.BlockStmt{List: []ast.Stmt{&ast.ExprStmt{
+			X: &ast.CallExpr{
+				Fun:  &ast.SelectorExpr{X: &ast.Ident{Name: "_recv"}, Sel: sel.Sel},
+				Args: call.Args,
+			},
+		}}},
+	}, true
+}
+
+func coalesceOptionalFieldsInCompositeLits(f *ast.File) int {
+	count := 0
+	ast.Inspect(f, func(n ast.Node) bool {
+		kv, ok := n.(*ast.KeyValueExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := ast.Unparen(kv.Value).(*ast.SelectorExpr)
+		if !ok || !alreadyNullCond(sel.X) {
+			return true
+		}
+		kv.Value = &ast.BinaryExpr{
+			X:    kv.Value,
+			Op:   token.NULLCOALESCE,
+			Y:    &ast.BasicLit{Kind: token.STRING, Value: `""`},
+		}
+		count++
+		return true
+	})
+	return count
 }

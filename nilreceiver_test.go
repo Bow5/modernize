@@ -219,14 +219,11 @@ func Use() {
 
 	files := []*ast.File{f}
 	returns := buildReturnTypeIndex(files)
-	if n := nilablePointerChains(f, files, returns, nil); n != 1 {
-		t.Fatalf("rewrote %d chains, want 1", n)
+	if n := nilablePointerChains(f, files, returns, nil); n != 0 {
+		t.Fatalf("nilablePointerChains rewrote %d, want 0 for method calls", n)
 	}
-	useFn := f.Decls[3].(*ast.FuncDecl)
-	call := useFn.Body.List[0].(*ast.ExprStmt).X.(*ast.CallExpr)
-	sel := call.Fun.(*ast.SelectorExpr)
-	if _, ok := sel.X.(*ast.NullCondExpr); !ok {
-		t.Fatalf("expected ?. on GetReqInfo result, got %T", sel.X)
+	if n := nilableMethodGuards(f, files, returns, nil); n != 1 {
+		t.Fatalf("nilableMethodGuards rewrote %d, want 1", n)
 	}
 }
 
