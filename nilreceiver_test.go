@@ -411,3 +411,150 @@ func f() {
 		t.Fatalf("expected sha1.New() not to resolve to local New(), got %T", got)
 	}
 }
+
+func TestNilablePointerChainsOnMultiReturnAssign(t *testing.T) {
+	const src = `package p
+
+type Target struct{ Client int; Bucket string }
+
+func head() (tgt *Target, ok bool) { return nil, false }
+
+func use() {
+	tgt, ok := head()
+	if !ok {
+		return
+	}
+	_ = Target{Client: tgt.Client, Bucket: tgt.Bucket}
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	headFn := f.Decls[1].(*ast.FuncDecl)
+	headFn.Type.Results.List[0].Type = &ast.NilableTypeExpr{X: headFn.Type.Results.List[0].Type, QPos: headFn.Type.Results.List[0].Type.End()}
+
+	files := []*ast.File{f}
+	returns := buildReturnTypeIndex(files)
+	if n := nilablePointerChains(f, files, returns, nil); n != 2 {
+		t.Fatalf("nilablePointerChains rewrote %d, want 2 field chains", n)
+	}
+}
+
+func TestNilableMethodGuardInFuncLitAfterOuterNilCheck(t *testing.T) {
+	const src = `package p
+
+type Target struct{}
+func (t *Target) StatObject() error { return nil }
+
+func work(tgt *Target) {
+	if tgt == nil {
+		return
+	}
+	go func() {
+		_ = tgt.StatObject()
+	}()
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn := f.Decls[2].(*ast.FuncDecl)
+	fn.Type.Params.List[0].Type = &ast.NilableTypeExpr{X: fn.Type.Params.List[0].Type, QPos: fn.Type.Params.List[0].Type.End()}
+
+	files := []*ast.File{f}
+	returns := buildReturnTypeIndex(files)
+	if n := nilableMethodGuards(f, files, returns, nil); n != 1 {
+		t.Fatalf("nilableMethodGuards rewrote %d, want 1 in func lit", n)
+	}
+}
+
+func TestNilableMethodGuardPreservesVariadicSpread(t *testing.T) {
+	const src = `package p
+
+type Client struct{}
+func (c *Client) Alive(servers ...int) <-chan int { return nil }
+
+type Sys struct{ hc *Client }
+
+func (sys *Sys) beat(eps []int) {
+	for range sys.hc.Alive(eps...) {
+	}
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := f.Decls[2].(*ast.GenDecl).Specs[0].(*ast.TypeSpec).Type.(*ast.StructType).Fields.List[0]
+	st.Type = &ast.NilableTypeExpr{X: st.Type, QPos: st.Type.End()}
+
+	files := []*ast.File{f}
+	returns := buildReturnTypeIndex(files)
+	if n := nilableMethodGuards(f, files, returns, nil); n != 1 {
+		t.Fatalf("nilableMethodGuards rewrote %d, want 1", n)
+	}
+	fn := f.Decls[3].(*ast.FuncDecl)
+	ifStmt := fn.Body.List[0].(*ast.IfStmt)
+	rangeStmt := ifStmt.Body.List[0].(*ast.RangeStmt)
+	call := rangeStmt.X.(*ast.CallExpr)
+	if call.Ellipsis == 0 {
+		t.Fatal("expected variadic ellipsis preserved in range guard")
+	}
+}
+
+func TestBuildFuncVarsTracksNilableMethodResult(t *testing.T) {
+	const src = `package p
+type Entry struct{}
+type Cache struct{}
+func (c *Cache) size() *Entry { return nil }
+func (c *Cache) scan() { flat := c.size(); _ = flat }
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sizeFn := f.Decls[2].(*ast.FuncDecl)
+	sizeFn.Type.Results.List[0].Type = &ast.NilableTypeExpr{X: sizeFn.Type.Results.List[0].Type, QPos: sizeFn.Type.Results.List[0].Type.End()}
+	files := []*ast.File{f}
+	returns := buildReturnTypeIndex(files)
+	varIdx := buildFuncVarIndex(files, returns, nil)
+	scanFn := f.Decls[3].(*ast.FuncDecl)
+	if !isNilablePointerType(varIdx.byFunc[scanFn]["flat"]) {
+		t.Fatalf("expected flat to be nilable, got %#v", varIdx.byFunc[scanFn]["flat"])
+	}
+}
+
+func TestNilableStarDerefGuard(t *testing.T) {
+	const src = `package p
+
+type Entry struct{ Size int }
+
+type Cache struct{}
+func (c *Cache) size() *Entry { return nil }
+func (c *Cache) replace(e Entry) {}
+
+func (c *Cache) scan() {
+	flat := c.size()
+	c.replace(*flat)
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retFn := f.Decls[2].(*ast.FuncDecl)
+	retFn.Type.Results.List[0].Type = &ast.NilableTypeExpr{X: retFn.Type.Results.List[0].Type, QPos: retFn.Type.Results.List[0].Type.End()}
+
+	files := []*ast.File{f}
+	returns := buildReturnTypeIndex(files)
+	if n := nilableMethodGuards(f, files, returns, nil); n != 1 {
+		t.Fatalf("nilableMethodGuards star deref rewrote %d, want 1", n)
+	}
+}

@@ -84,50 +84,5 @@ func importPathForIdent(f *ast.File, ident string) string {
 }
 
 func resolveCallResultType(local *returnTypeIndex, mod *moduleFuncIndex, f *ast.File, call *ast.CallExpr) ast.Expr {
-	if call == nil {
-		return nil
-	}
-	switch fun := ast.Unparen(call.Fun).(type) {
-	case *ast.Ident:
-		if local != nil {
-			return local.funcs[fun.Name]
-		}
-		return nil
-	case *ast.SelectorExpr:
-		if fun.Sel == nil {
-			return nil
-		}
-		if pkg, ok := fun.X.(*ast.Ident); ok {
-			impPath := ""
-			if f != nil {
-				impPath = importPathForIdent(f, pkg.Name)
-			}
-			if impPath != "" {
-				if mod != nil {
-					if pkgFuncs, ok := mod.byImportPath[impPath]; ok {
-						if res, ok := pkgFuncs[fun.Sel.Name]; ok {
-							return res
-						}
-					}
-				}
-				return nil
-			}
-			if local != nil {
-				if recvType := resolveExprResultType(local, mod, f, nil, fun.X); recvType != nil {
-					if res, ok := local.methods[methodKey{recv: typeBaseName(recvType), name: fun.Sel.Name}]; ok {
-						return res
-					}
-				}
-				return local.funcs[fun.Sel.Name]
-			}
-		}
-		if local != nil {
-			if recvType := resolveExprResultType(local, mod, f, nil, fun.X); recvType != nil && fun.Sel != nil {
-				if res, ok := local.methods[methodKey{recv: typeBaseName(recvType), name: fun.Sel.Name}]; ok {
-					return res
-				}
-			}
-		}
-	}
-	return nil
+	return resolveCallResultTypeAt(local, mod, f, nil, nil, nil, call, 0)
 }
