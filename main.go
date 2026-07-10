@@ -1100,6 +1100,7 @@ func (m *fileModernizer) convertResultType(ft *ast.FuncType) bool {
 	if !ok {
 		return false
 	}
+	vt = unwrapNilableTypeExpr(vt)
 	ft.Results = &ast.FieldList{
 		List: []*ast.Field{{
 			Type: &ast.ResultTypeExpr{X: astutilClone(vt)},
@@ -1107,6 +1108,13 @@ func (m *fileModernizer) convertResultType(ft *ast.FuncType) bool {
 	}
 	m.mark()
 	return true
+}
+
+func unwrapNilableTypeExpr(t ast.Expr) ast.Expr {
+	if ne, ok := ast.Unparen(t).(*ast.NilableTypeExpr); ok {
+		return ne.X
+	}
+	return t
 }
 
 func containsRangeOverSeqLoop(body *ast.BlockStmt) bool {

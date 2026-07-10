@@ -126,7 +126,7 @@ func runStepCommits(absRoot string, baseCfg Config, vcsRoot string, kind vcsKind
 		var changed []string
 		var err error
 		if step.name == "formatting" {
-			changed, err = runFormattingPass(absRoot)
+			changed, err = runFormattingPass(absRoot, vcsRoot, kind)
 		} else {
 			changed, err = runModernizePass(absRoot, stepCfg)
 		}
@@ -138,38 +138,31 @@ func runStepCommits(absRoot string, baseCfg Config, vcsRoot string, kind vcsKind
 			continue
 		}
 		fmt.Fprintf(os.Stderr, "step %s: %d file(s) changed\n", step.name, len(changed))
-		if err := commitStep(vcsRoot, kind, step.commitMsg, changed); err != nil {
+		committed, err := commitStep(vcsRoot, kind, step.commitMsg, changed)
+		if err != nil {
 			return fmt.Errorf("%s commit: %w", step.name, err)
 		}
-		fmt.Fprintf(os.Stderr, "step %s: committed\n", step.name)
+		if committed {
+			fmt.Fprintf(os.Stderr, "step %s: committed\n", step.name)
+		} else {
+			fmt.Fprintf(os.Stderr, "step %s: nothing to commit\n", step.name)
+		}
 	}
 	return nil
 }
 
-func runFormattingPass(root string) ([]string, error) {
-	paths, err := collectGoSourceFiles(root)
-	if err != nil {
-		return nil, err
+func runFormattingPass(root, vcsRoot string, kind vcsKind) ([]string, error) {
+	modRoot, ok := findModuleRoot(root)
+	if !ok {
+		modRoot = root
 	}
-	if len(paths) == 0 {
-		return nil, nil
-	}
-	gofmtPath := "gofmt"
-	if goroot := os.Getenv("GOROOT"); goroot != "" {
-		gofmtPath = filepath.Join(goroot, "bin", "gofmt")
-	}
-	before, err := gofmtList(gofmtPath, paths)
-	if err != nil {
-		return nil, err
-	}
-	if len(before) == 0 {
-		return nil, nil
-	}
-	cmd := exec.Command(gofmtPath, append([]string{"-w"}, before...)...)
+	cmd := exec.Command("go", "fmt", "./...")
+	cmd.Dir = modRoot
+	cmd.Env = os.Environ()
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("gofmt: %v: %s", err, strings.TrimSpace(string(out)))
+		return nil, fmt.Errorf("go fmt: %v: %s", err, strings.TrimSpace(string(out)))
 	}
-	return before, nil
+	return vcsModifiedFiles(vcsRoot, kind)
 }
 
 func gofmtList(gofmtPath string, paths []string) ([]string, error) {
@@ -228,35 +221,44 @@ func runModernizePass(absRoot string, cfg Config) ([]string, error) {
 	return summary.changedPaths, nil
 }
 
-func commitStep(vcsRoot string, kind vcsKind, message string, paths []string) error {
+func commitStep(vcsRoot string, kind vcsKind, message string, paths []string) (bool, error) {
+	paths = filterVCSTracked(vcsRoot, kind, paths)
+	if len(paths) == 0 {
+		return false, nil
+	}
 	switch kind {
 	case vcsGit:
 		return gitCommit(vcsRoot, message, paths)
 	case vcsHg:
 		return hgCommit(vcsRoot, message, paths)
 	default:
-		return fmt.Errorf("unsupported vcs %q", kind)
+		return false, fmt.Errorf("unsupported vcs %q", kind)
 	}
 }
 
-func gitCommit(vcsRoot, message string, paths []string) error {
-	args := []string{"-C", vcsRoot, "add", "--"}
-	args = append(args, paths...)
-	if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
-		return fmt.Errorf("git add: %v: %s", err, strings.TrimSpace(string(out)))
+func gitCommit(vcsRoot, message string, paths []string) (bool, error) {
+	for _, path := range paths {
+		rel, err := filepath.Rel(vcsRoot, path)
+		if err != nil {
+			rel = path
+		}
+		cmd := exec.Command("git", "-C", vcsRoot, "add", "--", rel)
+		if err := cmd.Run(); err != nil {
+			continue
+		}
 	}
 	diff := exec.Command("git", "-C", vcsRoot, "diff", "--cached", "--quiet")
 	if err := diff.Run(); err == nil {
-		return nil
+		return false, nil
 	}
 	cmd := exec.Command("git", "-C", vcsRoot, "commit", "-m", message)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git commit: %v: %s", err, strings.TrimSpace(string(out)))
+		return false, fmt.Errorf("git commit: %v: %s", err, strings.TrimSpace(string(out)))
 	}
-	return nil
+	return true, nil
 }
 
-func hgCommit(vcsRoot, message string, paths []string) error {
+func hgCommit(vcsRoot, message string, paths []string) (bool, error) {
 	for _, path := range paths {
 		rel, err := filepath.Rel(vcsRoot, path)
 		if err != nil {
@@ -265,13 +267,109 @@ func hgCommit(vcsRoot, message string, paths []string) error {
 		cmd := exec.Command("hg", "add", rel)
 		cmd.Dir = vcsRoot
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("hg add %s: %v: %s", rel, err, strings.TrimSpace(string(out)))
+			return false, fmt.Errorf("hg add %s: %v: %s", rel, err, strings.TrimSpace(string(out)))
 		}
 	}
 	cmd := exec.Command("hg", "commit", "-m", message)
 	cmd.Dir = vcsRoot
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("hg commit: %v: %s", err, strings.TrimSpace(string(out)))
+		return false, fmt.Errorf("hg commit: %v: %s", err, strings.TrimSpace(string(out)))
 	}
-	return nil
+	return true, nil
+}
+
+func vcsModifiedFiles(vcsRoot string, kind vcsKind) ([]string, error) {
+	switch kind {
+	case vcsGit:
+		return gitModifiedFiles(vcsRoot)
+	case vcsHg:
+		return hgModifiedFiles(vcsRoot)
+	default:
+		return nil, nil
+	}
+}
+
+func gitModifiedFiles(vcsRoot string) ([]string, error) {
+	cmd := exec.Command("git", "-C", vcsRoot, "status", "--porcelain")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		if line[0] == '?' && line[1] == '?' {
+			continue
+		}
+		if line[0] == ' ' && line[1] == ' ' {
+			continue
+		}
+		path := strings.TrimSpace(line[3:])
+		if idx := strings.Index(path, " -> "); idx >= 0 {
+			path = path[idx+4:]
+		}
+		paths = append(paths, filepath.Join(vcsRoot, path))
+	}
+	return paths, nil
+}
+
+func hgModifiedFiles(vcsRoot string) ([]string, error) {
+	cmd := exec.Command("hg", "status", "-mard")
+	cmd.Dir = vcsRoot
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if len(line) < 3 {
+			continue
+		}
+		paths = append(paths, filepath.Join(vcsRoot, line[2:]))
+	}
+	return paths, nil
+}
+
+func filterVCSTracked(vcsRoot string, kind vcsKind, paths []string) []string {
+	var tracked []string
+	for _, path := range paths {
+		if isVCSTracked(vcsRoot, kind, path) {
+			tracked = append(tracked, path)
+		}
+	}
+	return tracked
+}
+
+func isVCSTracked(vcsRoot string, kind vcsKind, path string) bool {
+	rel, err := filepath.Rel(vcsRoot, path)
+	if err != nil {
+		rel = path
+	}
+	switch kind {
+	case vcsGit:
+		if isGitIgnored(vcsRoot, rel) {
+			return false
+		}
+		cmd := exec.Command("git", "-C", vcsRoot, "ls-files", "--error-unmatch", "--", rel)
+		return cmd.Run() == nil
+	case vcsHg:
+		cmd := exec.Command("hg", "status", "-n", rel)
+		cmd.Dir = vcsRoot
+		out, err := cmd.Output()
+		if err != nil {
+			return false
+		}
+		line := strings.TrimSpace(string(out))
+		return line != "" && !strings.HasPrefix(line, "?")
+	default:
+		return true
+	}
+}
+
+func isGitIgnored(vcsRoot, rel string) bool {
+	cmd := exec.Command("git", "-C", vcsRoot, "check-ignore", "-q", "--", rel)
+	return cmd.Run() == nil
 }

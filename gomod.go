@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"go/ast"
 	"go/format"
 	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -108,5 +110,16 @@ func writeFormattedFile(path string, fset *token.FileSet, f *ast.File) error {
 	if err := format.Node(&out, fset, f); err != nil {
 		return err
 	}
-	return os.WriteFile(path, out.Bytes(), 0)
+	if err := os.WriteFile(path, out.Bytes(), 0); err != nil {
+		return err
+	}
+	gofmtPath := "gofmt"
+	if goroot := os.Getenv("GOROOT"); goroot != "" {
+		gofmtPath = filepath.Join(goroot, "bin", "gofmt")
+	}
+	cmd := exec.Command(gofmtPath, "-w", path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("gofmt %s: %v: %s", path, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }

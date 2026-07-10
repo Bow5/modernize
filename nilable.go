@@ -120,6 +120,8 @@ func (a *ptrAnnotator) isLookupResult(fn *ast.FuncDecl) bool {
 	switch name {
 	case "root", "sizerecursive", "totalchildrenrec":
 		return false
+	case "healing":
+		return true
 	}
 	for _, hint := range []string{"find", "search", "lookup", "parent"} {
 		if strings.Contains(name, hint) {
@@ -836,8 +838,10 @@ func rewriteInterfaceMethodTypes(fset *token.FileSet, f *ast.File, typ ast.Expr,
 		if rewriteFieldListTypes(fset, f, "param", mname, ft.Params, ann) {
 			changed = true
 		}
-		if rewriteFieldListTypes(fset, f, "result", mname, ft.Results, ann) {
-			changed = true
+		if ft.Results != nil && !stdErrPairResults(ft.Results) {
+			if rewriteFieldListTypes(fset, f, "result", mname, ft.Results, ann) {
+				changed = true
+			}
 		}
 	}
 	return changed
@@ -868,8 +872,10 @@ func rewriteFuncDeclTypes(fset *token.FileSet, f *ast.File, fn *ast.FuncDecl, an
 	if rewriteFieldListTypes(fset, f, "param", name, fn.Type.Params, ann) {
 		changed = true
 	}
-	if rewriteFieldListTypes(fset, f, "result", name, fn.Type.Results, ann) {
-		changed = true
+	if fn.Type.Results != nil && !stdErrPairResults(fn.Type.Results) {
+		if rewriteFieldListTypes(fset, f, "result", name, fn.Type.Results, ann) {
+			changed = true
+		}
 	}
 	return changed
 }
