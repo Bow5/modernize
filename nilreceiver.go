@@ -529,16 +529,48 @@ func nilablePointerChains(f *ast.File, files []*ast.File, returns *returnTypeInd
 	return count
 }
 
+func assignOnNilIdent(ifs *ast.IfStmt) (string, bool) {
+	if ifs == nil || ifs.Init != nil || ifs.Else != nil || ifs.Body == nil || len(ifs.Body.List) != 1 {
+		return "", false
+	}
+	id, nilCheck := identComparedToNil(ifs.Cond)
+	if !nilCheck {
+		return "", false
+	}
+	assign, ok := ifs.Body.List[0].(*ast.AssignStmt)
+	if !ok || assign.Tok != token.ASSIGN || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
+		return "", false
+	}
+	lhs, ok := ast.Unparen(assign.Lhs[0]).(*ast.Ident)
+	if !ok || lhs.Name != id || isNilExpr(assign.Rhs[0]) {
+		return "", false
+	}
+	return id, true
+}
+
+func narrowAfterStmt(stmt ast.Stmt, narrowed map[string]bool) map[string]bool {
+	ifs, ok := stmt.(*ast.IfStmt)
+	if !ok {
+		return narrowed
+	}
+	if id, ok := exitOnNilIdent(ifs); ok {
+		next := copyBoolMap(narrowed)
+		next[id] = true
+		return next
+	}
+	if id, ok := assignOnNilIdent(ifs); ok {
+		next := copyBoolMap(narrowed)
+		next[id] = true
+		return next
+	}
+	return narrowed
+}
+
 func nilableChainsInBlock(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, stmts []ast.Stmt, narrowed map[string]bool) int {
 	count := 0
 	for _, stmt := range stmts {
 		count += nilableChainsInStmt(fn, varIdx, returns, modIdx, f, stmt, narrowed)
-		if ifs, ok := stmt.(*ast.IfStmt); ok {
-			if id, ok := exitOnNilIdent(ifs); ok {
-				narrowed = copyBoolMap(narrowed)
-				narrowed[id] = true
-			}
-		}
+		narrowed = narrowAfterStmt(stmt, narrowed)
 	}
 	return count
 }

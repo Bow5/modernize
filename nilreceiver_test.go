@@ -296,3 +296,38 @@ func f() string {
 		t.Fatalf("rewrote %d chains, want 0 after nil check", n)
 	}
 }
+
+func TestNilablePointerChainsSkipsAfterNilAssign(t *testing.T) {
+	const src = `package p
+
+type ReqInfo struct {
+	API string
+	tags []string
+}
+
+func GetReqInfo() *ReqInfo {
+	return nil
+}
+
+func f() string {
+	req := GetReqInfo()
+	if req == nil {
+		req = &ReqInfo{API: "SYSTEM"}
+	}
+	return req.API
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retFn := f.Decls[1].(*ast.FuncDecl)
+	retFn.Type.Results.List[0].Type = &ast.NilableTypeExpr{X: retFn.Type.Results.List[0].Type, QPos: retFn.Type.Results.List[0].Type.End()}
+
+	files := []*ast.File{f}
+	returns := buildReturnTypeIndex(files)
+	if n := nilablePointerChains(f, files, returns, nil); n != 0 {
+		t.Fatalf("rewrote %d chains, want 0 after nil assign fallback", n)
+	}
+}
