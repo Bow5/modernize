@@ -84,7 +84,7 @@ Skips parenthesized `type ( … )` groups, type aliases, generics, and non-struc
 
 ### Nil receivers
 
-Removes unreachable `if recv == nil { … }` guards in pointer-receiver methods when [nil_receiver_panic](https://github.com/Bow5/Bow/blob/master/doc/new_features/nil_receivers.md) is enabled. Adds `?.` on call chains only when the callee had such a guard (equivalent short-circuit), never merely because a return type is nullable.
+Removes unreachable `if recv == nil { … }` guards in pointer-receiver methods (always unreachable in Bow — see [nil receivers](https://github.com/Bow5/Bow/blob/master/doc/new_features/nil_receivers.md)). Adds `?.` on call chains only when the callee had such a guard (equivalent short-circuit), never merely because a return type is nullable.
 
 ### Structured errors (`errors.Base`)
 

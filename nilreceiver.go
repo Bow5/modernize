@@ -6,7 +6,7 @@ import (
 )
 
 // removeNilReceiverGuards deletes `if recv == nil { return/panic … }` in pointer-receiver
-// methods. With nil_receiver_panic (Bow), those branches are unreachable on direct calls.
+// methods. In Bow, those branches are unreachable on direct calls.
 func removeNilReceiverGuards(f *ast.File) int {
 	count := 0
 	for _, decl := range f.Decls {
@@ -279,7 +279,7 @@ func resolveSelectorReceiverType(idx *returnTypeIndex, sel *ast.SelectorExpr) st
 
 // optionalMethodChains adds ?. only where it preserves upstream behavior: the
 // called method has `if recv == nil { return nil / zero }`, which short-circuits
-// the same way as ?. when nil_receiver_panic is enabled.
+// the same way as ?. in Bow (nil receiver calls panic at the call site).
 func optionalMethodChains(f *ast.File, files []*ast.File, guardIdx *nilGuardIndex) int {
 	returns := buildReturnTypeIndex(files)
 	count := 0

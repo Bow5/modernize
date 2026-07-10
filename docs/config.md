@@ -63,7 +63,7 @@ To disable only `errors.Base` embedding:
 | `errors_base_usages` | `true` | Rewrite constructions (`NewCustom`, constructor returns, assign/`var` composites) |
 | `shorthand_types` | `true` | Rewrite `type T struct` / `type I interface` to `struct T` / `interface I` |
 | `step_commits` | `true` | When the target is in a git or hg repo, run each pass separately and commit its changes (formatting first, then nilable pointers, `T!` / `!`, structured errors, shorthand) |
-| `remove_nil_receiver_guards` | `true` | Remove `if recv == nil { return … }` guards in pointer-receiver methods (unreachable with [nil_receiver_panic](../../go/doc/new_features/nil_receivers.md)) |
+| `remove_nil_receiver_guards` | `true` | Remove `if recv == nil { return … }` guards in pointer-receiver methods (unreachable in Bow — [nil receivers](../../go/doc/new_features/nil_receivers.md)) |
 | `optional_method_chains` | `true` | Add `?.` only where a method had `if recv == nil { return nil / zero }` — behaviorally equivalent to the old guard |
 
 ## Step commits
