@@ -652,6 +652,42 @@ func nonNilBranchIdent(ifs *ast.IfStmt) (string, bool) {
 	return "", false
 }
 
+func narrowFromOrNilContinue(ifs *ast.IfStmt) (string, bool) {
+	if ifs == nil || ifs.Init != nil || ifs.Else != nil || ifs.Body == nil {
+		return "", false
+	}
+	if !bodyOnlyContinues(ifs.Body) {
+		return "", false
+	}
+	if id, ok := identComparedToNil(ifs.Cond); ok {
+		return id, true
+	}
+	be, ok := ifs.Cond.(*ast.BinaryExpr)
+	if !ok || be.Op != token.LOR {
+		return "", false
+	}
+	if id, ok := identComparedToNil(be.X); ok {
+		return id, true
+	}
+	if id, ok := identComparedToNil(be.Y); ok {
+		return id, true
+	}
+	return "", false
+}
+
+func bodyOnlyContinues(body *ast.BlockStmt) bool {
+	if body == nil || len(body.List) == 0 {
+		return false
+	}
+	for _, stmt := range body.List {
+		br, ok := stmt.(*ast.BranchStmt)
+		if !ok || br.Tok != token.CONTINUE {
+			return false
+		}
+	}
+	return true
+}
+
 func narrowAfterStmt(stmt ast.Stmt, narrowed map[string]bool) map[string]bool {
 	ifs, ok := stmt.(*ast.IfStmt)
 	if !ok {
@@ -663,6 +699,11 @@ func narrowAfterStmt(stmt ast.Stmt, narrowed map[string]bool) map[string]bool {
 		return next
 	}
 	if id, ok := assignOnNilIdent(ifs); ok {
+		next := copyBoolMap(narrowed)
+		next[id] = true
+		return next
+	}
+	if id, ok := narrowFromOrNilContinue(ifs); ok {
 		next := copyBoolMap(narrowed)
 		next[id] = true
 		return next
@@ -870,6 +911,8 @@ func rewriteNilableMethodStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *r
 			inner[id] = true
 		} else if id, ok := assignOnNilIdent(s); ok {
 			inner[id] = true
+		} else if id, ok := narrowFromOrNilContinue(s); ok {
+			inner[id] = true
 		}
 		if s.Body != nil {
 			list, n := rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, s.Body.List, inner, 0)
@@ -906,7 +949,7 @@ func rewriteNilableMethodStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *r
 				return []ast.Stmt{guard}, 1
 			}
 		}
-		if len(s.Rhs) == 1 {
+		if len(s.Rhs) == 1 && s.Tok == token.ASSIGN {
 			if guard, ok := nilableMethodGuardFromAssign(fn, varIdx, returns, modIdx, f, s, narrowed); ok {
 				return []ast.Stmt{guard}, 1
 			}
