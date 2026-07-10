@@ -331,3 +331,56 @@ func f() string {
 		t.Fatalf("rewrote %d chains, want 0 after nil assign fallback", n)
 	}
 }
+
+func TestNilablePointerChainsSkipsInsideNotNilBranch(t *testing.T) {
+	const src = `package p
+
+type Checksum struct{ Type int }
+
+func f(res *Checksum) int {
+	if res != nil {
+		return res.Type
+	}
+	return 0
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn := f.Decls[1].(*ast.FuncDecl)
+	fn.Type.Params.List[0].Type = &ast.NilableTypeExpr{X: fn.Type.Params.List[0].Type, QPos: fn.Type.Params.List[0].Type.End()}
+
+	files := []*ast.File{f}
+	returns := buildReturnTypeIndex(files)
+	if n := nilablePointerChains(f, files, returns, nil); n != 0 {
+		t.Fatalf("rewrote %d chains, want 0 inside if res != nil", n)
+	}
+}
+
+func TestResolveCallResultTypeIgnoresLocalNewForImport(t *testing.T) {
+	const src = `package p
+
+import "crypto/sha1"
+
+func New() *T { return nil }
+
+type T struct{}
+
+func f() {
+	h := sha1.New()
+	h.Write(nil)
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := buildReturnTypeIndex([]*ast.File{f})
+	call := f.Decls[3].(*ast.FuncDecl).Body.List[0].(*ast.AssignStmt).Rhs[0].(*ast.CallExpr)
+	if got := resolveCallResultType(local, nil, f, call); got != nil {
+		t.Fatalf("expected sha1.New() not to resolve to local New(), got %T", got)
+	}
+}

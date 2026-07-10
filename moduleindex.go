@@ -98,14 +98,19 @@ func resolveCallResultType(local *returnTypeIndex, mod *moduleFuncIndex, f *ast.
 			return nil
 		}
 		if pkg, ok := fun.X.(*ast.Ident); ok {
-			if mod != nil && f != nil {
-				if impPath := importPathForIdent(f, pkg.Name); impPath != "" {
+			impPath := ""
+			if f != nil {
+				impPath = importPathForIdent(f, pkg.Name)
+			}
+			if impPath != "" {
+				if mod != nil {
 					if pkgFuncs, ok := mod.byImportPath[impPath]; ok {
 						if res, ok := pkgFuncs[fun.Sel.Name]; ok {
 							return res
 						}
 					}
 				}
+				return nil
 			}
 			if local != nil {
 				if recvType := resolveExprResultType(local, mod, f, nil, fun.X); recvType != nil {

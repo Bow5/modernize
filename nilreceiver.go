@@ -548,6 +548,23 @@ func assignOnNilIdent(ifs *ast.IfStmt) (string, bool) {
 	return id, true
 }
 
+func nonNilBranchIdent(ifs *ast.IfStmt) (string, bool) {
+	if ifs == nil || ifs.Init != nil || ifs.Else != nil {
+		return "", false
+	}
+	be, ok := ast.Unparen(ifs.Cond).(*ast.BinaryExpr)
+	if !ok || be.Op != token.NEQ {
+		return "", false
+	}
+	if id, ok := ast.Unparen(be.X).(*ast.Ident); ok && isNilExpr(be.Y) {
+		return id.Name, true
+	}
+	if id, ok := ast.Unparen(be.Y).(*ast.Ident); ok && isNilExpr(be.X) {
+		return id.Name, true
+	}
+	return "", false
+}
+
 func narrowAfterStmt(stmt ast.Stmt, narrowed map[string]bool) map[string]bool {
 	ifs, ok := stmt.(*ast.IfStmt)
 	if !ok {
@@ -589,6 +606,8 @@ func nilableChainsInStmt(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *return
 		}
 		inner := copyBoolMap(narrowed)
 		if id, ok := exitOnNilIdent(s); ok {
+			inner[id] = true
+		} else if id, ok := nonNilBranchIdent(s); ok {
 			inner[id] = true
 		}
 		if s.Body != nil {
