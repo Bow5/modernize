@@ -379,6 +379,7 @@ func modernizeNilReceivers(f *ast.File, files []*ast.File, cfg Config, modIdx *m
 		chains += nilablePointerChains(f, files, returns, modIdx)
 		chains += nilableMethodGuards(f, files, returns, modIdx)
 		chains += coalesceOptionalStringFieldReads(f, files, returns, modIdx)
+		chains += coalesceOptionalLenArgs(f, files, returns, modIdx)
 		chains += coalesceOptionalBoolUnary(f, files)
 		chains += stripNonNilableCoalesce(f)
 		chains += rewriteIfNilableChainConditions(f, files, returns, modIdx)
@@ -1506,11 +1507,13 @@ func nilableRootStmtGuard(fn *ast.FuncDecl, varIdx *funcVarIndex, f *ast.File, s
 		if last > blockIdx {
 			for i := blockIdx + 1; i <= last; i++ {
 				rewriteRootAccessInStmt(block[i], root, "_root")
+				rewriteStarDerefIdent(block[i], root, "_root")
 				body = append(body, block[i])
 			}
 			skip = last - blockIdx
 		}
 	}
+	rewriteStarDerefIdent(stmt, root, "_root")
 	guard := &ast.IfStmt{
 		Init: &ast.AssignStmt{
 			Tok: token.DEFINE,
@@ -1918,9 +1921,6 @@ func coalesceStringFieldsInBlock(fn *ast.FuncDecl, varIdx *funcVarIndex, returns
 func coalesceStringFieldsInNode(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, node ast.Node, narrowed map[string]bool) int {
 	count := 0
 	ast.Inspect(node, func(n ast.Node) bool {
-		if _, ok := n.(*ast.FuncLit); ok {
-			return false
-		}
 		sel, ok := n.(*ast.SelectorExpr)
 		if !ok {
 			return true
@@ -1928,6 +1928,44 @@ func coalesceStringFieldsInNode(fn *ast.FuncDecl, varIdx *funcVarIndex, returns 
 		count += maybeCoalesceStringFieldRead(sel, returns, modIdx, f, varIdx.structs, fn, varIdx.byFunc[fn], varIdx.pkgVars, node)
 		return true
 	})
+	return count
+}
+
+func coalesceOptionalLenArgs(f *ast.File, files []*ast.File, returns *returnTypeIndex, modIdx *moduleFuncIndex) int {
+	varIdx := buildFuncVarIndex(files, returns, modIdx)
+	count := 0
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		vars := varIdx.byFunc[fn]
+		ast.Inspect(fn, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			id, ok := call.Fun.(*ast.Ident)
+			if !ok || id.Name != "len" || len(call.Args) != 1 {
+				return true
+			}
+			sel, ok := ast.Unparen(call.Args[0]).(*ast.SelectorExpr)
+			if !ok || !alreadyNullCond(sel.X) {
+				return true
+			}
+			ft := fieldTypeFromOptionalSelectorExpr(varIdx.structs, sel, vars)
+			if ft == nil {
+				return true
+			}
+			call.Args[0] = &ast.BinaryExpr{
+				X:    sel,
+				Op:   token.NULLCOALESCE,
+				Y:    zeroExprForType(ft),
+			}
+			count++
+			return true
+		})
+	}
 	return count
 }
 
