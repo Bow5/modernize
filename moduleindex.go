@@ -84,5 +84,5 @@ func importPathForIdent(f *ast.File, ident string) string {
 }
 
 func resolveCallResultType(local *returnTypeIndex, mod *moduleFuncIndex, f *ast.File, call *ast.CallExpr) ast.Expr {
-	return resolveCallResultTypeAt(local, mod, f, nil, nil, nil, call, 0)
+	return resolveCallResultTypeAt(local, mod, f, nil, nil, nil, nil, call, 0)
 }
