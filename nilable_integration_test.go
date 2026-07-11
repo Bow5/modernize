@@ -5,6 +5,8 @@ import (
 	"go/format"
 	"go/parser"
 	"go/token"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -234,7 +236,7 @@ func (c *tracer) subroute(s string) *tracer {
 	if ann.nilable[key] {
 		t.Fatal("nil-receiver guard return nil should not mark result nilable")
 	}
-	changed, _ := applyPtrAnnotations(fset, []*ast.File{f})
+	changed, _ := applyPtrAnnotations(fset, []string{"p.go"}, []*ast.File{f})
 	if changed[0] {
 		t.Fatal("expected no pointer type rewrite")
 	}
@@ -262,7 +264,7 @@ func open() (*Client, error) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	changed, _ := applyPtrAnnotations(fset, []*ast.File{f})
+	changed, _ := applyPtrAnnotations(fset, []string{"p.go"}, []*ast.File{f})
 	if !changed[0] {
 		t.Fatal("expected pointer annotation changes")
 	}
@@ -307,7 +309,7 @@ func (r *Reader) read() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	changed, _ := applyPtrAnnotations(fset, []*ast.File{f})
+	changed, _ := applyPtrAnnotations(fset, []string{"p.go"}, []*ast.File{f})
 	if !changed[0] {
 		t.Fatal("expected pointer annotation changes")
 	}
@@ -338,7 +340,7 @@ func setHeaders(rs *HTTPRangeSpec) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	changed, _ := applyPtrAnnotations(fset, []*ast.File{f})
+	changed, _ := applyPtrAnnotations(fset, []string{"p.go"}, []*ast.File{f})
 	if !changed[0] {
 		t.Fatal("expected pointer annotation changes")
 	}
@@ -403,5 +405,306 @@ func use() {
 	}
 	if !strings.Contains(out, "chan int?") {
 		t.Fatalf("expected nilable channel:\n%s", out)
+	}
+}
+
+func TestPtrAnnotatorStructFieldNilAssign(t *testing.T) {
+	const src = `package p
+
+type DEK struct {
+	Plaintext []byte
+}
+
+func (d *DEK) clear() {
+	d.Plaintext = nil
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ann := newPtrAnnotator(fset, []*ast.File{f})
+	ann.analyze()
+	key := ptrSiteKey{kind: "field", owner: "DEK", name: "Plaintext", index: -1}
+	if !ann.nilable[key] {
+		t.Fatal("Plaintext should be nilable")
+	}
+}
+
+func TestPtrAnnotatorStructDeclShorthand(t *testing.T) {
+	const src = `package p
+
+struct queueItem {
+	dst chan [][]string
+}
+
+func send(in *queueItem) {
+	in.dst <- nil
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ann := newPtrAnnotator(fset, []*ast.File{f})
+	ann.analyze()
+	key := ptrSiteKey{kind: "field", owner: "queueItem", name: "dst", index: -1}
+	if !ann.chanElemNilable[key] {
+		t.Fatal("expected chanElemNilable on shorthand struct field")
+	}
+	changed := false
+	if rewriteChanNilSends(f, ann) {
+		changed = true
+	}
+	if !changed {
+		t.Fatal("expected nil send rewrite")
+	}
+	out := formatTestFile(fset, f)
+	if !strings.Contains(out, "dst <- []") {
+		t.Fatalf("expected empty slice send:\n%s", out)
+	}
+}
+
+func TestPtrAnnotatorDropNilableParamIfaceCallDoesNotMatchConcrete(t *testing.T) {
+	const src = `package p
+
+import "hash"
+
+type UUIDHash struct{}
+
+func (u UUIDHash) Sum(b []byte) []byte { return b }
+func (u UUIDHash) Write(p []byte) (int, error) { return len(p), nil }
+func (u UUIDHash) Reset() {}
+func (u UUIDHash) Size() int { return 0 }
+func (u UUIDHash) BlockSize() int { return 0 }
+
+var _ hash.Hash = &UUIDHash{}
+
+type Reader struct {
+	md5 hash.Hash
+}
+
+func (r *Reader) read() {
+	r.md5.Sum(nil)
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ann := newPtrAnnotator(fset, []*ast.File{f})
+	ann.analyze()
+	key := ptrSiteKey{kind: "param", owner: "Sum", name: "b", index: 0}
+	if ann.nilable[key] {
+		t.Fatal("concrete Sum param should not be nilable from interface call")
+	}
+}
+
+func TestRewriteNilableSliceFieldArgs(t *testing.T) {
+	moduleNilableSliceFields = map[string]ast.Expr{
+		"DEK.Plaintext": &ast.ArrayType{Elt: &ast.Ident{Name: "byte"}},
+	}
+	const src = `package config
+
+import "github.com/minio/minio/internal/kms"
+
+func f(k *kms.KMS) {
+	key := k.GenerateKey(nil, nil)!
+	_ = stream(key.Plaintext)
+}
+
+func stream(b []byte) {}
+`
+	path := t.TempDir() + "/p.go"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ann := newPtrAnnotator(fset, []*ast.File{f})
+	if !rewriteNilableSliceFieldArgs(f, fset, ann, path) {
+		t.Fatal("expected rewrite")
+	}
+	out, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "??") {
+		t.Fatalf("expected coalesce:\n%s", out)
+	}
+}
+
+func TestDropNilableSourcesForMultiValueReturnUse(t *testing.T) {
+	const src = `package p
+
+func getHosts() ([]string, []byte?, error) {
+	var remain []byte?
+	remain = append(remain, 1)
+	return nil, remain, nil
+}
+
+func use() {
+	_, remain, _ := getHosts()
+	consume(remain)
+}
+
+func consume(b []byte) {}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ann := newPtrAnnotator(fset, []*ast.File{f})
+	ann.analyze()
+	key := ptrSiteKey{kind: "result", owner: "getHosts", name: "remain", index: 1}
+	if ann.nilable[key] {
+		t.Fatal("getHosts remain result should not stay nilable when passed to consume")
+	}
+}
+
+func TestDropNilableResultsAssignedToStrictSliceVar(t *testing.T) {
+	const src = `package p
+
+func lookup() (*int, []string, error) {
+	return nil, nil, nil
+}
+
+func use() {
+	var groups []string
+	_, groups, _ = lookup()
+	_ = groups
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ann := newPtrAnnotator(fset, []*ast.File{f})
+	ann.analyze()
+	key := ptrSiteKey{kind: "result", owner: "lookup", index: 1}
+	if ann.nilable[key] {
+		t.Fatal("lookup []string result should not stay nilable when assigned to []string var")
+	}
+}
+
+func TestModuleNilableDEKPlaintext(t *testing.T) {
+	const kmsSrc = `package kms
+
+struct DEK {
+	Plaintext []byte
+}
+
+func (d *DEK) UnmarshalText(text []byte) error {
+	d.Plaintext = nil
+	return nil
+}
+`
+	const configSrc = `package config
+
+import "kms"
+
+func f(k *kms.KMS) {
+	key := k.GenerateKey(nil, nil)!
+	_ = consume(key.Plaintext)
+}
+
+func consume(b []byte) {}
+`
+	// stub KMS type for GenerateKey
+	const kmsExtra = `package kms
+
+type KMS struct{}
+func (k *KMS) GenerateKey(a, b any) DEK! { return DEK{} }
+`
+	dir := t.TempDir()
+	kmsDir := filepath.Join(dir, "kms")
+	configDir := filepath.Join(dir, "config")
+	os.MkdirAll(kmsDir, 0o755)
+	os.MkdirAll(configDir, 0o755)
+	write := func(path, src string) {
+		if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(kmsDir, "conn.go"), kmsSrc)
+	write(filepath.Join(kmsDir, "extra.go"), kmsExtra)
+	write(filepath.Join(configDir, "crypto.go"), configSrc)
+
+	pkgs := []pkgFiles{
+		{dir: kmsDir, paths: []string{filepath.Join(kmsDir, "conn.go"), filepath.Join(kmsDir, "extra.go")}},
+		{dir: configDir, paths: []string{filepath.Join(configDir, "crypto.go")}},
+	}
+	moduleNilableSliceFields = buildModuleNilableSliceFields(pkgs)
+	if _, ok := moduleNilableSliceFields["DEK.Plaintext"]; !ok {
+		t.Fatalf("expected DEK.Plaintext in module map: %#v", moduleNilableSliceFields)
+	}
+}
+
+func TestCoalesceModuleSliceFieldCallArgsMinioCrypto(t *testing.T) {
+	if _, err := os.Stat("/root/GolangProject/minio/internal/kms/conn.go"); err != nil {
+		t.Skip("minio not present")
+	}
+	pkgs, err := collectPackages("/root/GolangProject/minio")
+	if err != nil {
+		t.Fatal(err)
+	}
+	moduleNilableSliceFields = buildModuleNilableSliceFields(pkgs)
+	if _, ok := moduleNilableSliceFields["DEK.Plaintext"]; !ok {
+		t.Fatalf("missing DEK.Plaintext in %#v", moduleNilableSliceFields)
+	}
+	const src = `package config
+
+import "github.com/minio/minio/internal/kms"
+
+func f(k *kms.KMS) {
+	key := k.GenerateKey(nil, nil)!
+	_ = consume(key.Plaintext)
+}
+
+func consume(b []byte) {}
+`
+	path := t.TempDir() + "/crypto.go"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !coalesceModuleSliceFieldCallArgs(f, fset, path) {
+		t.Fatal("expected coalesce")
+	}
+	out, _ := os.ReadFile(path)
+	if !strings.Contains(string(out), "??") {
+		t.Fatalf("expected ??: %s", out)
+	}
+}
+
+func TestLookupFuncSkipsNonPointerNilableReturns(t *testing.T) {
+	const src = `package p
+
+func lookupUser() (*int, []string, error) {
+	return nil, nil, nil
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ann := newPtrAnnotator(fset, []*ast.File{f})
+	ann.analyze()
+	key := ptrSiteKey{kind: "result", owner: "lookupUser", index: 1}
+	if ann.nilable[key] {
+		t.Fatal("lookup func should not nilable-annotate slice results")
 	}
 }

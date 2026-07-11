@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"go/ast"
+	"go/format"
+	"go/parser"
 	"go/token"
+	"os"
 	"sort"
 	"strings"
 )
@@ -20,30 +24,35 @@ type typedField struct {
 }
 
 type ptrAnnotator struct {
-	fset          *token.FileSet
-	files         []*ast.File
-	nilable       map[ptrSiteKey]bool
-	strictResult  map[ptrSiteKey]bool
-	lookupResult  map[ptrSiteKey]bool
-	typeNode      map[ptrSiteKey]ast.Expr
-	funcs         map[string][]*ast.FuncDecl
+	fset            *token.FileSet
+	files           []*ast.File
+	nilable         map[ptrSiteKey]bool
+	chanElemNilable map[ptrSiteKey]bool
+	ifaceImplTypes  map[string]bool
+	strictResult    map[ptrSiteKey]bool
+	lookupResult    map[ptrSiteKey]bool
+	typeNode        map[ptrSiteKey]ast.Expr
+	funcs           map[string][]*ast.FuncDecl
 }
 
 func newPtrAnnotator(fset *token.FileSet, files []*ast.File) *ptrAnnotator {
 	return &ptrAnnotator{
-		fset:         fset,
-		files:        files,
-		nilable:      make(map[ptrSiteKey]bool),
-		strictResult: make(map[ptrSiteKey]bool),
-		lookupResult: make(map[ptrSiteKey]bool),
-		typeNode:     make(map[ptrSiteKey]ast.Expr),
-		funcs:        make(map[string][]*ast.FuncDecl),
+		fset:            fset,
+		files:           files,
+		nilable:         make(map[ptrSiteKey]bool),
+		chanElemNilable: make(map[ptrSiteKey]bool),
+		ifaceImplTypes:  make(map[string]bool),
+		strictResult:    make(map[ptrSiteKey]bool),
+		lookupResult:    make(map[ptrSiteKey]bool),
+		typeNode:        make(map[ptrSiteKey]ast.Expr),
+		funcs:           make(map[string][]*ast.FuncDecl),
 	}
 }
 
 func (a *ptrAnnotator) analyze() {
 	a.collectSites()
 	for _, f := range a.files {
+		a.collectInterfaceImplTypes(f)
 		a.scanNilEvidence(f)
 	}
 	a.markLookupResults()
@@ -51,6 +60,13 @@ func (a *ptrAnnotator) analyze() {
 	a.dropNilableParamsUsedAsCallArgs()
 	a.dropNilableReassignedParams()
 	a.propagateNilableFromCalleeReturns()
+	a.dropNilableResultsUsedInIteration()
+	a.dropNilableParamsOnInterfaceImpls()
+	a.dropNilableChannelsUsedInSyncOps()
+	a.dropNilableSlicesUsedInCollectionOps()
+	a.dropNilableResultsAssignedToStrictTargets()
+	a.propagateNilableFromChanReceive()
+	a.dropNilableFieldsUsedAsCallArgs()
 	a.finalizeNilableResults()
 }
 
@@ -102,6 +118,10 @@ func (a *ptrAnnotator) markLookupResults() {
 
 func (a *ptrAnnotator) finalizeNilableResults() {
 	for key := range a.strictResult {
+		if a.nilable[key] && key.kind == "field" {
+			delete(a.strictResult, key)
+			continue
+		}
 		if a.lookupResult[key] {
 			continue
 		}
@@ -141,6 +161,10 @@ func (a *ptrAnnotator) collectSites() {
 			switch d := decl.(type) {
 			case *ast.GenDecl:
 				a.collectGenDecl(d)
+			case *ast.StructDecl:
+				a.collectStructFields(d.Name.Name, &ast.StructType{Fields: d.Fields})
+			case *ast.InterfaceDecl:
+				a.collectInterfaceMethods(d.Name.Name, &ast.InterfaceType{Methods: d.Methods})
 			case *ast.FuncDecl:
 				a.funcs[d.Name.Name] = append(a.funcs[d.Name.Name], d)
 				a.collectFuncDecl(d)
@@ -306,7 +330,7 @@ func (a *ptrAnnotator) scanNilEvidence(f *ast.File) {
 			curFunc = x
 			recvName = recvParamName(x)
 		case *ast.FuncLit:
-			return false
+			return true
 		case *ast.IfStmt:
 			if isNilReceiverGuard(x, recvName) {
 				return false
@@ -316,9 +340,11 @@ func (a *ptrAnnotator) scanNilEvidence(f *ast.File) {
 		case *ast.ReturnStmt:
 			a.scanReturn(x, curFunc)
 		case *ast.CallExpr:
-			a.scanCall(x)
+			a.scanCall(x, curFunc)
 		case *ast.CompositeLit:
 			a.scanCompositeLit(x)
+		case *ast.SendStmt:
+			a.scanSend(x)
 		}
 		return true
 	})
@@ -346,7 +372,8 @@ func (a *ptrAnnotator) scanAssign(as *ast.AssignStmt, fn *ast.FuncDecl) {
 			case *ast.Ident:
 				a.markVarNilable(fn, e.Name)
 			case *ast.SelectorExpr:
-				if typeName, field, ok := selectorField(e); ok {
+				typeName, field, ok := a.fieldOwnerName(e, fn)
+				if ok {
 					key := ptrSiteKey{kind: "field", owner: typeName, name: field, index: -1}
 					a.nilable[key] = true
 				}
@@ -355,6 +382,21 @@ func (a *ptrAnnotator) scanAssign(as *ast.AssignStmt, fn *ast.FuncDecl) {
 		}
 		if id, ok := ast.Unparen(lhs).(*ast.Ident); ok {
 			a.strictResult[ptrSiteKey{kind: "var", owner: owner, name: id.Name, index: -1}] = true
+		}
+		if sel, ok := ast.Unparen(lhs).(*ast.SelectorExpr); ok {
+			if typeName, field, ok := a.fieldOwnerName(sel, fn); ok {
+				key := ptrSiteKey{kind: "field", owner: typeName, name: field, index: -1}
+				rhs = ast.Unparen(rhs)
+				if _, ok := rhs.(*ast.Ident); ok {
+					continue
+				}
+				if call, ok := rhs.(*ast.CallExpr); ok {
+					if _, ok := a.calleeResultKey(call, 0); ok {
+						continue
+					}
+				}
+				a.strictResult[key] = true
+			}
 		}
 	}
 }
@@ -410,16 +452,27 @@ func (a *ptrAnnotator) scanReturn(ret *ast.ReturnStmt, fn *ast.FuncDecl) {
 		if !errLastResult(fn.Type.Results) {
 			continue
 		}
+		if lookup && !isPointerRefType(flat[i].typ) {
+			continue
+		}
 		a.nilable[flat[i].key] = true
 	}
 }
 
-func (a *ptrAnnotator) scanCall(call *ast.CallExpr) {
+func isPointerRefType(t ast.Expr) bool {
+	_, ok := ast.Unparen(plainRefType(t)).(*ast.StarExpr)
+	return ok
+}
+
+func (a *ptrAnnotator) scanCall(call *ast.CallExpr, curFunc *ast.FuncDecl) {
 	fnName, _, _ := callTarget(call.Fun)
 	if fnName == "" {
 		return
 	}
 	for _, fn := range a.funcs[fnName] {
+		if !a.callMatchesFunc(call, fn, curFunc) {
+			continue
+		}
 		if fn.Type == nil || fn.Type.Params == nil {
 			continue
 		}
@@ -480,8 +533,29 @@ func callTarget(fun ast.Expr) (name, recv string, isMethod bool) {
 }
 
 func (a *ptrAnnotator) scanCompositeLit(lit *ast.CompositeLit) {
-	// Struct fields set to nil in composite literals are often optional
-	// sentinels; do not infer *T? on the field type from those alone.
+	typeName := compositeLitTypeName(lit)
+	if typeName == "" {
+		return
+	}
+	for _, elt := range lit.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		field, ok := kv.Key.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		key := ptrSiteKey{kind: "field", owner: typeName, name: field.Name, index: -1}
+		if a.typeNode[key] == nil {
+			continue
+		}
+		if isNilExpr(kv.Value) {
+			a.nilable[key] = true
+			continue
+		}
+		a.strictResult[key] = true
+	}
 }
 
 func compositeLitTypeName(lit *ast.CompositeLit) string {
@@ -504,7 +578,7 @@ func compositeLitTypeName(lit *ast.CompositeLit) string {
 	return ""
 }
 
-func (a *ptrAnnotator) calleeResultKey(call *ast.CallExpr, resultIndex int) (ptrSiteKey, bool) {
+func (a *ptrAnnotator) calleeResultKeyAt(call *ast.CallExpr, resultIndex int) (ptrSiteKey, bool) {
 	name, _, isMethod := callTarget(call.Fun)
 	if name == "" {
 		return ptrSiteKey{}, false
@@ -524,12 +598,17 @@ func (a *ptrAnnotator) calleeResultKey(call *ast.CallExpr, resultIndex int) (ptr
 		if resultIndex >= len(flat) {
 			continue
 		}
-		key := flat[resultIndex].key
-		if a.nilable[key] {
-			return key, true
-		}
+		return flat[resultIndex].key, true
 	}
 	return ptrSiteKey{}, false
+}
+
+func (a *ptrAnnotator) calleeResultKey(call *ast.CallExpr, resultIndex int) (ptrSiteKey, bool) {
+	key, ok := a.calleeResultKeyAt(call, resultIndex)
+	if !ok || !a.nilable[key] {
+		return ptrSiteKey{}, false
+	}
+	return key, true
 }
 
 func (a *ptrAnnotator) markAssignTargetNilable(lhs ast.Expr, owner string, fn *ast.FuncDecl) bool {
@@ -829,6 +908,606 @@ func (a *ptrAnnotator) dropNilableParamsUsedAsCallArgs() {
 	}
 }
 
+func (a *ptrAnnotator) fieldOwnerName(sel *ast.SelectorExpr, fn *ast.FuncDecl) (typeName, field string, ok bool) {
+	field = sel.Sel.Name
+	if fn != nil && fn.Recv != nil {
+		if recvName, recvType, rok := recvNameAndType(fn.Recv); rok && recvType != "" {
+			if id, ok := sel.X.(*ast.Ident); ok && id.Name == recvName {
+				return recvType, field, true
+			}
+		}
+	}
+	if id, ok := sel.X.(*ast.Ident); ok && fn != nil {
+		key := ptrSiteKey{kind: "var", owner: fn.Name.Name, name: id.Name, index: -1}
+		if typ := a.typeNode[key]; typ != nil {
+			if tn := typeNameFromExpr(typ); tn != "" {
+				return tn, field, true
+			}
+		}
+		if tn := a.inferIdentType(fn, id.Name); tn != "" {
+			return tn, field, true
+		}
+	}
+	return selectorField(sel)
+}
+
+func (a *ptrAnnotator) scanSend(s *ast.SendStmt) {
+	if !isNilExpr(s.Value) {
+		return
+	}
+	sel, ok := s.Chan.(*ast.SelectorExpr)
+	if !ok {
+		return
+	}
+	field := sel.Sel.Name
+	for key, typ := range a.typeNode {
+		if key.kind != "field" || key.name != field {
+			continue
+		}
+		if ch, ok := ast.Unparen(typ).(*ast.ChanType); ok && ch.Value != nil {
+			a.chanElemNilable[key] = true
+		}
+	}
+}
+
+func (a *ptrAnnotator) markNilableFromChanRecv(lhs ast.Expr, ch ast.Expr, fn *ast.FuncDecl) {
+	sel, ok := ast.Unparen(ch).(*ast.SelectorExpr)
+	if !ok {
+		return
+	}
+	field := sel.Sel.Name
+	for key := range a.chanElemNilable {
+		if key.name != field {
+			continue
+		}
+		switch e := ast.Unparen(lhs).(type) {
+		case *ast.Ident:
+			a.markVarNilable(fn, e.Name)
+		case *ast.SelectorExpr:
+			if typeName, name, ok := a.fieldOwnerName(e, fn); ok {
+				a.nilable[ptrSiteKey{kind: "field", owner: typeName, name: name, index: -1}] = true
+			}
+		}
+		_ = key
+	}
+}
+
+func (a *ptrAnnotator) propagateNilableFromChanReceive() {
+	for _, f := range a.files {
+		var curFunc *ast.FuncDecl
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.FuncDecl:
+				curFunc = x
+			case *ast.FuncLit:
+				return true
+			case *ast.AssignStmt:
+				for i, lhs := range x.Lhs {
+					unary, ok := ast.Unparen(rhsAt(x.Rhs, i)).(*ast.UnaryExpr)
+					if !ok || unary.Op != token.ARROW {
+						continue
+					}
+					a.markNilableFromChanRecv(lhs, unary.X, curFunc)
+				}
+			}
+			return true
+		})
+	}
+}
+
+func (a *ptrAnnotator) dropNilableFieldsUsedAsCallArgs() {
+	for _, f := range a.files {
+		var curFunc *ast.FuncDecl
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.FuncDecl:
+				curFunc = x
+			case *ast.FuncLit:
+				return true
+			case *ast.CallExpr:
+				for _, arg := range x.Args {
+					sel, ok := ast.Unparen(arg).(*ast.SelectorExpr)
+					if !ok {
+						continue
+					}
+					typeName := a.exprTypeName(sel.X, curFunc)
+					if typeName == "" {
+						continue
+					}
+					key := ptrSiteKey{kind: "field", owner: typeName, name: sel.Sel.Name, index: -1}
+					delete(a.nilable, key)
+				}
+			}
+			return true
+		})
+	}
+}
+
+func rewriteMakeChanElemNilable(f *ast.File, ann *ptrAnnotator) bool {
+	if len(ann.chanElemNilable) == 0 {
+		return false
+	}
+	changed := false
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true
+		}
+		id, ok := call.Fun.(*ast.Ident)
+		if !ok || id.Name != "make" {
+			return true
+		}
+		ch, ok := ast.Unparen(call.Args[0]).(*ast.ChanType)
+		if !ok {
+			return true
+		}
+		arr, ok := ast.Unparen(ch.Value).(*ast.ArrayType)
+		if !ok || arr.Len != nil {
+			return true
+		}
+		newVal := setRefNilable(ch.Value, true)
+		if newVal == ch.Value {
+			return true
+		}
+		call.Args[0] = &ast.ChanType{Dir: ch.Dir, Value: newVal}
+		changed = true
+		return true
+	})
+	return changed
+}
+
+func rewriteChanNilSends(f *ast.File, ann *ptrAnnotator) bool {
+	changed := false
+	ast.Inspect(f, func(n ast.Node) bool {
+		s, ok := n.(*ast.SendStmt)
+		if !ok || !isNilExpr(s.Value) {
+			return true
+		}
+		sel, ok := s.Chan.(*ast.SelectorExpr)
+		if !ok || sel.Sel == nil {
+			return true
+		}
+		for key, typ := range ann.typeNode {
+			if key.kind != "field" || key.name != sel.Sel.Name {
+				continue
+			}
+			ch, ok := ast.Unparen(typ).(*ast.ChanType)
+			if !ok || ch.Value == nil {
+				continue
+			}
+			if arr, ok := ast.Unparen(ch.Value).(*ast.ArrayType); ok && arr.Len == nil {
+				s.Value = &ast.CompositeLit{Type: ch.Value}
+				changed = true
+				break
+			}
+		}
+		return true
+	})
+	return changed
+}
+
+func ifaceImplTypeName(v ast.Expr) string {
+	switch x := ast.Unparen(v).(type) {
+	case *ast.UnaryExpr:
+		if x.Op == token.AND {
+			return typeNameFromExpr(x.X)
+		}
+	case *ast.CompositeLit:
+		return typeNameFromExpr(x.Type)
+	case *ast.CallExpr:
+		if star, ok := ast.Unparen(x.Fun).(*ast.StarExpr); ok {
+			return typeNameFromExpr(star.X)
+		}
+	}
+	return ""
+}
+
+func (a *ptrAnnotator) collectInterfaceImplTypes(f *ast.File) {
+	for _, decl := range f.Decls {
+		g, ok := decl.(*ast.GenDecl)
+		if !ok || g.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range g.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok || len(vs.Names) != 1 || vs.Names[0].Name != "_" || len(vs.Values) != 1 {
+				continue
+			}
+			if typeName := ifaceImplTypeName(vs.Values[0]); typeName != "" {
+				a.ifaceImplTypes[typeName] = true
+			}
+		}
+	}
+}
+
+func (a *ptrAnnotator) dropNilableResultsUsedInIteration() {
+	for _, f := range a.files {
+		var curFunc *ast.FuncDecl
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.FuncDecl:
+				curFunc = x
+			case *ast.FuncLit:
+				return false
+			case *ast.RangeStmt:
+				if call, ok := ast.Unparen(x.X).(*ast.CallExpr); ok {
+					if key, ok := a.calleeResultKey(call, 0); ok {
+						delete(a.nilable, key)
+					}
+				}
+				if id, ok := ast.Unparen(x.X).(*ast.Ident); ok && curFunc != nil {
+					a.clearNilableForIterSource(curFunc, id.Name)
+				}
+			}
+			return true
+		})
+	}
+}
+
+func (a *ptrAnnotator) clearNilableForVarSources(fn *ast.FuncDecl, varName string) {
+	if fn == nil {
+		return
+	}
+	if fn.Type != nil && fn.Type.Results != nil {
+		for _, tf := range flattenFields("result", fn.Name.Name, fn.Type.Results) {
+			if tf.key.name == varName {
+				delete(a.nilable, tf.key)
+			}
+		}
+	}
+	if fn.Body == nil {
+		return
+	}
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		assign, ok := n.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for i, lhs := range assign.Lhs {
+			id, ok := ast.Unparen(lhs).(*ast.Ident)
+			if !ok || id.Name != varName {
+				continue
+			}
+			var call *ast.CallExpr
+			resultIdx := i
+			if len(assign.Rhs) == 1 {
+				call, _ = ast.Unparen(assign.Rhs[0]).(*ast.CallExpr)
+			} else {
+				call, _ = ast.Unparen(rhsAt(assign.Rhs, i)).(*ast.CallExpr)
+			}
+			if call != nil {
+				if key, ok := a.calleeResultKeyAt(call, resultIdx); ok {
+					delete(a.nilable, key)
+				}
+			}
+		}
+		return true
+	})
+}
+
+func (a *ptrAnnotator) clearNilableForIterSource(fn *ast.FuncDecl, varName string) {
+	a.clearNilableForVarSources(fn, varName)
+}
+
+func (a *ptrAnnotator) dropNilableParamsOnInterfaceImpls() {
+	for _, fns := range a.funcs {
+		for _, fn := range fns {
+			if fn.Recv == nil || fn.Type == nil || fn.Type.Params == nil {
+				continue
+			}
+			_, recvType, ok := recvNameAndType(fn.Recv)
+			if !ok || !a.ifaceImplTypes[recvType] {
+				continue
+			}
+			for _, tf := range flattenFields("param", fn.Name.Name, fn.Type.Params) {
+				delete(a.nilable, tf.key)
+			}
+		}
+	}
+}
+
+func (a *ptrAnnotator) dropNilableChannelsUsedInSyncOps() {
+	used := make(map[ptrSiteKey]bool)
+	for _, f := range a.files {
+		var curFunc *ast.FuncDecl
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.FuncDecl:
+				curFunc = x
+			case *ast.FuncLit:
+				return true
+			case *ast.CallExpr:
+				for _, arg := range x.Args {
+					a.markChanExprUsed(arg, curFunc, used)
+				}
+				if id, ok := x.Fun.(*ast.Ident); ok && len(x.Args) == 1 {
+					if id.Name == "len" || id.Name == "close" {
+						a.markChanExprUsed(x.Args[0], curFunc, used)
+					}
+				}
+			case *ast.UnaryExpr:
+				if x.Op == token.ARROW {
+					a.markChanExprUsed(x.X, curFunc, used)
+				}
+			case *ast.SendStmt:
+				a.markChanExprUsed(x.Chan, curFunc, used)
+			}
+			return true
+		})
+	}
+	for key := range used {
+		if typ := a.typeNode[key]; typ != nil {
+			if _, ok := ast.Unparen(plainRefType(typ)).(*ast.ChanType); ok {
+				delete(a.nilable, key)
+			}
+		}
+	}
+}
+
+func (a *ptrAnnotator) markChanExprUsed(e ast.Expr, curFunc *ast.FuncDecl, used map[ptrSiteKey]bool) {
+	e = ast.Unparen(e)
+	if id, ok := e.(*ast.Ident); ok && curFunc != nil {
+		a.clearNilableForVarSources(curFunc, id.Name)
+	}
+	for _, key := range a.exprRefKeys(e, curFunc) {
+		used[key] = true
+	}
+}
+
+func (a *ptrAnnotator) dropNilableSlicesUsedInCollectionOps() {
+	used := make(map[ptrSiteKey]bool)
+	for _, f := range a.files {
+		var curFunc *ast.FuncDecl
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.FuncDecl:
+				curFunc = x
+			case *ast.FuncLit:
+				return true
+			case *ast.RangeStmt:
+				a.markSliceExprUsed(x.X, curFunc, used)
+			case *ast.IndexExpr:
+				a.markSliceExprUsed(x.X, curFunc, used)
+			case *ast.CallExpr:
+				if id, ok := x.Fun.(*ast.Ident); ok && len(x.Args) > 0 {
+					if id.Name == "append" || id.Name == "len" {
+						a.markSliceExprUsed(x.Args[0], curFunc, used)
+					}
+				}
+				for _, arg := range x.Args {
+					a.markSliceExprUsed(arg, curFunc, used)
+				}
+			}
+			return true
+		})
+	}
+	for key := range used {
+		if key.kind == "field" {
+			continue
+		}
+		if typ := a.typeNode[key]; typ != nil {
+			if arr, ok := ast.Unparen(plainRefType(typ)).(*ast.ArrayType); ok && arr.Len == nil {
+				delete(a.nilable, key)
+			}
+		}
+	}
+}
+
+func (a *ptrAnnotator) markSliceExprUsed(e ast.Expr, curFunc *ast.FuncDecl, used map[ptrSiteKey]bool) {
+	e = ast.Unparen(e)
+	if id, ok := e.(*ast.Ident); ok && curFunc != nil {
+		a.clearNilableForVarSources(curFunc, id.Name)
+	}
+	for _, key := range a.exprRefKeys(e, curFunc) {
+		used[key] = true
+	}
+}
+
+func (a *ptrAnnotator) dropNilableResultsAssignedToStrictTargets() {
+	for _, f := range a.files {
+		var curFunc *ast.FuncDecl
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.FuncDecl:
+				curFunc = x
+			case *ast.FuncLit:
+				return false
+			case *ast.AssignStmt:
+				owner := ""
+				if curFunc != nil {
+					owner = curFunc.Name.Name
+				}
+				for i, lhs := range x.Lhs {
+					id, ok := ast.Unparen(lhs).(*ast.Ident)
+					if !ok {
+						continue
+					}
+					key := ptrSiteKey{kind: "var", owner: owner, name: id.Name, index: -1}
+					if !a.isStrictRefType(key) {
+						continue
+					}
+					var call *ast.CallExpr
+					resultIdx := i
+					if len(x.Rhs) == 1 {
+						call, _ = ast.Unparen(x.Rhs[0]).(*ast.CallExpr)
+					} else {
+						call, _ = ast.Unparen(rhsAt(x.Rhs, i)).(*ast.CallExpr)
+					}
+					if call != nil {
+						if rk, ok := a.calleeResultKeyAt(call, resultIdx); ok {
+							delete(a.nilable, rk)
+						}
+					}
+				}
+			case *ast.ReturnStmt:
+				if curFunc == nil || curFunc.Type == nil || curFunc.Type.Results == nil {
+					return true
+				}
+				flat := flattenFields("result", curFunc.Name.Name, curFunc.Type.Results)
+				for i, expr := range x.Results {
+					if i >= len(flat) || !a.isStrictRefType(flat[i].key) {
+						continue
+					}
+					call, ok := ast.Unparen(expr).(*ast.CallExpr)
+					if !ok {
+						continue
+					}
+					if rk, ok := a.calleeResultKeyAt(call, i); ok {
+						delete(a.nilable, rk)
+					}
+				}
+			}
+			return true
+		})
+	}
+}
+
+func (a *ptrAnnotator) isStrictRefType(key ptrSiteKey) bool {
+	typ := a.typeNode[key]
+	if typ == nil || plainRefType(typ) == nil {
+		return false
+	}
+	if _, ok := ast.Unparen(typ).(*ast.NilableTypeExpr); ok {
+		return false
+	}
+	switch ast.Unparen(plainRefType(typ)).(type) {
+	case *ast.ArrayType, *ast.ChanType, *ast.MapType, *ast.StarExpr:
+		return true
+	}
+	return false
+}
+
+func (a *ptrAnnotator) isStrictNonNilableContainer(key ptrSiteKey) bool {
+	return a.isStrictRefType(key)
+}
+
+func (a *ptrAnnotator) exprRefKeys(e ast.Expr, curFunc *ast.FuncDecl) []ptrSiteKey {
+	e = ast.Unparen(e)
+	switch x := e.(type) {
+	case *ast.Ident:
+		var keys []ptrSiteKey
+		if curFunc != nil {
+			keys = append(keys, ptrSiteKey{kind: "var", owner: curFunc.Name.Name, name: x.Name, index: -1})
+			if curFunc.Type != nil {
+				if curFunc.Type.Results != nil {
+					for _, tf := range flattenFields("result", curFunc.Name.Name, curFunc.Type.Results) {
+						if tf.key.name == x.Name {
+							keys = append(keys, tf.key)
+						}
+					}
+				}
+				if curFunc.Type.Params != nil {
+					for _, tf := range flattenFields("param", curFunc.Name.Name, curFunc.Type.Params) {
+						if tf.key.name == x.Name {
+							keys = append(keys, tf.key)
+						}
+					}
+				}
+			}
+			return keys
+		}
+		return []ptrSiteKey{{kind: "var", name: x.Name, index: -1}}
+	case *ast.SelectorExpr:
+		if typeName, field, ok := a.fieldOwnerName(x, curFunc); ok {
+			return []ptrSiteKey{{kind: "field", owner: typeName, name: field, index: -1}}
+		}
+	}
+	return nil
+}
+
+func (a *ptrAnnotator) callMatchesFunc(call *ast.CallExpr, fn *ast.FuncDecl, curFunc *ast.FuncDecl) bool {
+	if fn == nil || fn.Name == nil {
+		return false
+	}
+	name, _, isMethod := callTarget(call.Fun)
+	if fn.Name.Name != name {
+		return false
+	}
+	if fn.Recv == nil {
+		return !isMethod
+	}
+	if !isMethod {
+		return false
+	}
+	sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	recvType := a.exprTypeName(sel.X, curFunc)
+	if recvType == "" {
+		return false
+	}
+	_, wantType, ok := recvNameAndType(fn.Recv)
+	if !ok || wantType == "" {
+		return false
+	}
+	return typesMatch(recvType, wantType)
+}
+
+func typesMatch(got, want string) bool {
+	if got == want {
+		return true
+	}
+	if strings.TrimPrefix(got, "*") == want {
+		return true
+	}
+	if got == "*"+want {
+		return true
+	}
+	return false
+}
+
+func (a *ptrAnnotator) exprTypeName(e ast.Expr, curFunc *ast.FuncDecl) string {
+	switch x := ast.Unparen(e).(type) {
+	case *ast.Ident:
+		if curFunc != nil {
+			if curFunc.Recv != nil {
+				recvName, recvType, ok := recvNameAndType(curFunc.Recv)
+				if ok && x.Name == recvName {
+					return recvType
+				}
+			}
+			if curFunc.Type != nil {
+				if curFunc.Type.Params != nil {
+					for _, tf := range flattenFields("param", curFunc.Name.Name, curFunc.Type.Params) {
+						if tf.key.name == x.Name {
+							return typeNameFromExpr(tf.typ)
+						}
+					}
+				}
+				if curFunc.Type.Results != nil {
+					for _, tf := range flattenFields("result", curFunc.Name.Name, curFunc.Type.Results) {
+						if tf.key.name == x.Name {
+							return typeNameFromExpr(tf.typ)
+						}
+					}
+				}
+			}
+			key := ptrSiteKey{kind: "var", owner: curFunc.Name.Name, name: x.Name, index: -1}
+			if typ := a.typeNode[key]; typ != nil {
+				return typeNameFromExpr(typ)
+			}
+		}
+		key := ptrSiteKey{kind: "var", name: x.Name, index: -1}
+		if typ := a.typeNode[key]; typ != nil {
+			return typeNameFromExpr(typ)
+		}
+		if curFunc != nil {
+			if tn := a.inferIdentType(curFunc, x.Name); tn != "" {
+				return tn
+			}
+		}
+	case *ast.SelectorExpr:
+		if typeName, _, ok := a.fieldOwnerName(x, curFunc); ok {
+			key := ptrSiteKey{kind: "field", owner: typeName, name: x.Sel.Name, index: -1}
+			if typ := a.typeNode[key]; typ != nil {
+				return typeNameFromExpr(typ)
+			}
+		}
+	}
+	return ""
+}
+
 func selectorField(sel *ast.SelectorExpr) (typeName, field string, ok bool) {
 	switch x := sel.X.(type) {
 	case *ast.Ident:
@@ -855,14 +1534,255 @@ func (a *ptrAnnotator) countVerifiedNonNilPointers() int {
 	return n
 }
 
-func applyPtrAnnotations(fset *token.FileSet, files []*ast.File) (changed []bool, verifiedNonNil int) {
+var moduleNilableSliceFields map[string]ast.Expr
+
+func buildModuleNilableSliceFields(pkgs []pkgFiles) map[string]ast.Expr {
+	out := make(map[string]ast.Expr)
+	for _, pkg := range pkgs {
+		fset := token.NewFileSet()
+		files := make([]*ast.File, len(pkg.paths))
+		okPkg := true
+		for i, path := range pkg.paths {
+			f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+			if err != nil {
+				okPkg = false
+				break
+			}
+			f.NilablePointersRegions = buildNilablePointersRegions(collectNilablePointersDirectives(f))
+			files[i] = f
+		}
+		if !okPkg || len(files) == 0 {
+			continue
+		}
+		ann := newPtrAnnotator(fset, files)
+		ann.analyze()
+		for key, nilable := range ann.nilable {
+			if !nilable || key.kind != "field" {
+				continue
+			}
+			typ := ann.typeNode[key]
+			ref := plainRefType(typ)
+			arr, ok := ref.(*ast.ArrayType)
+			if !ok || arr.Len != nil {
+				continue
+			}
+			out[key.owner+"."+key.name] = ref
+		}
+	}
+	return out
+}
+
+func moduleNilableFieldBySuffix(field string) (ast.Expr, bool) {
+	var typ ast.Expr
+	var count int
+	for ref, t := range moduleNilableSliceFields {
+		if !strings.HasSuffix(ref, "."+field) {
+			continue
+		}
+		if count > 0 {
+			return nil, false
+		}
+		typ = t
+		count++
+	}
+	return typ, count == 1
+}
+
+func (a *ptrAnnotator) appendNilableSliceCoalesceEdit(edits *[]sourceEdit, arg ast.Expr, curFunc *ast.FuncDecl, path string, fset *token.FileSet) {
+	var typ ast.Expr
+	var expr ast.Expr
+	switch e := ast.Unparen(arg).(type) {
+	case *ast.SelectorExpr:
+		if ownerType, field, ok := a.fieldOwnerName(e, curFunc); ok {
+			key := ptrSiteKey{kind: "field", owner: ownerType, name: field, index: -1}
+			if a.nilable[key] {
+				typ = a.typeNode[key]
+				expr = e
+				break
+			}
+			if typ, ok = moduleNilableSliceFields[ownerType+"."+field]; ok {
+				expr = e
+				break
+			}
+		}
+		typeName := a.exprTypeName(e.X, curFunc)
+		var ok bool
+		typ, ok = moduleNilableSliceFields[typeName+"."+e.Sel.Name]
+		if !ok {
+			typ, ok = moduleNilableFieldBySuffix(e.Sel.Name)
+		}
+		if !ok {
+			return
+		}
+		expr = e
+	case *ast.Ident:
+		owner := ""
+		if curFunc != nil {
+			owner = curFunc.Name.Name
+		}
+		key := ptrSiteKey{kind: "var", owner: owner, name: e.Name, index: -1}
+		if !a.nilable[key] {
+			return
+		}
+		typ = a.typeNode[key]
+		expr = e
+	default:
+		return
+	}
+	ref := plainRefType(typ)
+	if ref == nil {
+		return
+	}
+	if _, ok := ast.Unparen(ref).(*ast.ArrayType); !ok {
+		return
+	}
+	start := fset.Position(expr.Pos()).Offset
+	end := fset.Position(expr.End()).Offset
+	zero := formatTypeZero(ref)
+	*edits = append(*edits, sourceEdit{
+		start: start,
+		end:   end,
+		text:  []byte("(" + stringFromFile(path, start, end) + " ?? " + zero + ")"),
+	})
+}
+
+func rewriteNilableSliceFieldArgs(f *ast.File, fset *token.FileSet, ann *ptrAnnotator, path string) bool {
+	var edits []sourceEdit
+	var curFunc *ast.FuncDecl
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.FuncDecl:
+			curFunc = x
+		case *ast.FuncLit:
+			return true
+		case *ast.CallExpr:
+			for _, arg := range x.Args {
+				ann.appendNilableSliceCoalesceEdit(&edits, arg, curFunc, path, fset)
+			}
+		}
+		return true
+	})
+	if len(edits) == 0 {
+		return false
+	}
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	newSrc := applySourceEdits(src, edits)
+	if err := os.WriteFile(path, newSrc, 0); err != nil {
+		return false
+	}
+	// re-parse file into f for subsequent writes
+	reparsed, err := parser.ParseFile(fset, path, newSrc, parser.ParseComments)
+	if err != nil {
+		return false
+	}
+	reparsed.NilablePointersRegions = f.NilablePointersRegions
+	*f = *reparsed
+	return true
+}
+
+func coalesceModuleSliceFieldCallArgs(f *ast.File, fset *token.FileSet, path string) bool {
+	if len(moduleNilableSliceFields) == 0 {
+		return false
+	}
+	var edits []sourceEdit
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		for _, arg := range call.Args {
+			sel, ok := ast.Unparen(arg).(*ast.SelectorExpr)
+			if !ok || sel.Sel == nil {
+				continue
+			}
+			typ, ok := moduleNilableFieldBySuffix(sel.Sel.Name)
+			if !ok {
+				continue
+			}
+			ref := plainRefType(typ)
+			if ref == nil {
+				continue
+			}
+			if _, ok := ast.Unparen(ref).(*ast.ArrayType); !ok {
+				continue
+			}
+			start := fset.Position(sel.Pos()).Offset
+			end := fset.Position(sel.End()).Offset
+			snippet := stringFromFile(path, start, end)
+			if strings.Contains(snippet, "??") {
+				continue
+			}
+			zero := formatTypeZero(ref)
+			edits = append(edits, sourceEdit{
+				start: start,
+				end:   end,
+				text:  []byte("(" + stringFromFile(path, start, end) + " ?? " + zero + ")"),
+			})
+		}
+		return true
+	})
+	if len(edits) == 0 {
+		return false
+	}
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	newSrc := applySourceEdits(src, edits)
+	if err := os.WriteFile(path, newSrc, 0); err != nil {
+		return false
+	}
+	reparsed, err := parser.ParseFile(fset, path, newSrc, parser.ParseComments)
+	if err != nil {
+		return false
+	}
+	reparsed.NilablePointersRegions = f.NilablePointersRegions
+	*f = *reparsed
+	return true
+}
+
+func stringFromFile(path string, start, end int) string {
+	src, err := os.ReadFile(path)
+	if err != nil || start < 0 || end > len(src) || start >= end {
+		return ""
+	}
+	return string(src[start:end])
+}
+
+func formatTypeZero(typ ast.Expr) string {
+	ref := plainRefType(typ)
+	if ref == nil {
+		return "{}"
+	}
+	var buf bytes.Buffer
+	_ = format.Node(&buf, token.NewFileSet(), ref)
+	return buf.String() + "{}"
+}
+
+func applyPtrAnnotations(fset *token.FileSet, paths []string, files []*ast.File) (changed []bool, verifiedNonNil int) {
 	ann := newPtrAnnotator(fset, files)
 	ann.analyze()
 	verifiedNonNil = ann.countVerifiedNonNilPointers()
 	changed = make([]bool, len(files))
 	for i, f := range files {
+		path := ""
+		if i < len(paths) {
+			path = paths[i]
+		}
 		fileChanged := false
 		if rewriteFilePointerTypes(fset, f, ann) {
+			fileChanged = true
+		}
+		if rewriteChanNilSends(f, ann) {
+			fileChanged = true
+		}
+		if rewriteNilableSliceFieldArgs(f, fset, ann, path) {
+			fileChanged = true
+		}
+		if coalesceModuleSliceFieldCallArgs(f, fset, path) {
 			fileChanged = true
 		}
 		if splitNilOrReturnGuards(fset, f, ann) {
@@ -917,8 +1837,81 @@ func recvNameAndType(recv *ast.FieldList) (recvName, typeName string, ok bool) {
 	return recvName, typeNameFromExpr(recv.List[0].Type), true
 }
 
+func (a *ptrAnnotator) inferIdentType(fn *ast.FuncDecl, name string) string {
+	if fn == nil || fn.Body == nil {
+		return ""
+	}
+	var typeName string
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		assign, ok := n.(*ast.AssignStmt)
+		if !ok || assign.Tok != token.DEFINE {
+			return true
+		}
+		for i, lhs := range assign.Lhs {
+			id, ok := lhs.(*ast.Ident)
+			if !ok || id.Name != name {
+				continue
+			}
+			rhs := ast.Unparen(rhsAt(assign.Rhs, i))
+			if fe, ok := rhs.(*ast.ForceExpr); ok {
+				rhs = ast.Unparen(fe.X)
+			}
+			if call, ok := rhs.(*ast.CallExpr); ok {
+				if tn := a.calleeResultTypeName(call, fn); tn != "" {
+					typeName = tn
+					return false
+				}
+			}
+		}
+		return true
+	})
+	return typeName
+}
+
+func (a *ptrAnnotator) calleeResultTypeName(call *ast.CallExpr, fn *ast.FuncDecl) string {
+	if sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr); ok && sel.Sel != nil {
+		recvType := ""
+		if id, ok := sel.X.(*ast.Ident); ok && fn != nil {
+			key := ptrSiteKey{kind: "var", owner: fn.Name.Name, name: id.Name, index: -1}
+			if typ := a.typeNode[key]; typ != nil {
+				recvType = typeNameFromExpr(typ)
+			}
+			if recvType == "" && fn.Type != nil && fn.Type.Params != nil {
+				for _, tf := range flattenFields("param", fn.Name.Name, fn.Type.Params) {
+					if tf.key.name == id.Name {
+						recvType = typeBaseName(tf.typ)
+						break
+					}
+				}
+			}
+		}
+		for _, m := range a.funcs[sel.Sel.Name] {
+			if m.Recv == nil || m.Type == nil || m.Type.Results == nil || len(m.Type.Results.List) != 1 {
+				continue
+			}
+			_, wantType, ok := recvNameAndType(m.Recv)
+			if !ok || (recvType != "" && !typesMatch(recvType, wantType)) {
+				continue
+			}
+			return typeNameFromExpr(m.Type.Results.List[0].Type)
+		}
+	}
+	name, _, _ := callTarget(call.Fun)
+	for _, fn := range a.funcs[name] {
+		if fn.Type == nil || fn.Type.Results == nil || len(fn.Type.Results.List) != 1 {
+			continue
+		}
+		return typeNameFromExpr(fn.Type.Results.List[0].Type)
+	}
+	return ""
+}
+
 func typeNameFromExpr(t ast.Expr) string {
 	switch x := ast.Unparen(t).(type) {
+	case *ast.ResultTypeExpr:
+		return typeNameFromExpr(x.X)
+	case *ast.NilableTypeExpr:
+		return typeNameFromExpr(x.X)
 	case *ast.Ident:
 		return x.Name
 	case *ast.StarExpr:
@@ -964,6 +1957,14 @@ func rewriteFilePointerTypes(fset *token.FileSet, f *ast.File, ann *ptrAnnotator
 		switch d := decl.(type) {
 		case *ast.GenDecl:
 			if rewriteGenDeclTypes(fset, f, d, ann) {
+				changed = true
+			}
+		case *ast.StructDecl:
+			if rewriteStructFieldTypes(fset, f, d.Name.Name, &ast.StructType{Fields: d.Fields}, ann) {
+				changed = true
+			}
+		case *ast.InterfaceDecl:
+			if rewriteInterfaceMethodTypes(fset, f, &ast.InterfaceType{Methods: d.Methods}, ann) {
 				changed = true
 			}
 		case *ast.FuncDecl:

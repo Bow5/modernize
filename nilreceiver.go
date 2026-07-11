@@ -361,6 +361,38 @@ func alreadyNullCond(e ast.Expr) bool {
 	return ok
 }
 
+func exprHasNullCond(e ast.Expr) bool {
+	found := false
+	ast.Inspect(e, func(n ast.Node) bool {
+		if _, ok := n.(*ast.NullCondExpr); ok {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+func selectorHasOptionalChain(sel *ast.SelectorExpr) bool {
+	if sel == nil {
+		return false
+	}
+	if alreadyNullCond(sel.X) {
+		return true
+	}
+	if _, ok := ast.Unparen(sel.X).(*ast.NullCondExpr); ok {
+		return true
+	}
+	// sel.X may be an optional value; sel itself is a field read on optional receiver.
+	if id, ok := ast.Unparen(sel.X).(*ast.Ident); ok && id.Name != "" {
+		return true
+	}
+	if call, ok := ast.Unparen(sel.X).(*ast.CallExpr); ok {
+		return call != nil
+	}
+	return false
+}
+
 func wrapNullCond(e ast.Expr) ast.Expr {
 	if alreadyNullCond(e) {
 		return e
@@ -377,7 +409,8 @@ func modernizeNilReceivers(f *ast.File, files []*ast.File, cfg Config, modIdx *m
 	if cfg.OptionalMethodChains {
 		chains = optionalMethodChains(f, files, guardIdx)
 		chains += nilablePointerChains(f, files, returns, modIdx)
-		chains += nilableMethodGuards(f, files, returns, modIdx)
+		// nilableMethodGuards inserts broken guard trees on some complex functions (e.g. data-usage-cache).
+		// chains += nilableMethodGuards(f, files, returns, modIdx)
 		chains += coalesceOptionalStringFieldReads(f, files, returns, modIdx)
 		chains += coalesceOptionalLenArgs(f, files, returns, modIdx)
 		chains += coalesceOptionalBoolUnary(f, files)
@@ -1780,16 +1813,12 @@ func coalesceOptionalFieldsInCompositeLits(f *ast.File, structs *structFieldInde
 			if !ok {
 				continue
 			}
-			sel, ok := ast.Unparen(kv.Value).(*ast.SelectorExpr)
-			if !ok || !alreadyNullCond(sel.X) {
-				continue
-			}
 			key, ok := kv.Key.(*ast.Ident)
 			if !ok || structs == nil {
 				continue
 			}
 			ft := structs.fieldType(typeName, key.Name)
-			if !isStringishType(ft) {
+			if !isStringishType(ft) || !exprHasNullCond(kv.Value) {
 				continue
 			}
 			kv.Value = &ast.BinaryExpr{

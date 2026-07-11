@@ -94,6 +94,16 @@ func runModernize(absRoot string, cfg Config) (passSummary, error) {
 		return summary, err
 	}
 
+	if cfg.NilablePointersAnnotate || cfg.OptionalMethodChains {
+		fieldPkgs := pkgs
+		if modRoot, ok := findModuleRoot(absRoot); ok {
+			if allPkgs, err := collectPackages(modRoot); err == nil {
+				fieldPkgs = allPkgs
+			}
+		}
+		moduleNilableSliceFields = buildModuleNilableSliceFields(fieldPkgs)
+	}
+
 	for _, pkg := range pkgs {
 		paths, n, e := modernizePackage(pkg, cfg, modIdx)
 		if e != nil {
@@ -115,6 +125,28 @@ func runModernize(absRoot string, cfg Config) (passSummary, error) {
 		summary.counts.negativeSlice += n.negativeSlice
 		summary.counts.nilRecvGuards += n.nilRecvGuards
 		summary.counts.optionalChains += n.optionalChains
+	}
+	if cfg.OptionalMethodChains {
+		if modRoot, ok := findModuleRoot(absRoot); ok {
+			if allPkgs, err := collectPackages(modRoot); err == nil {
+				pkgs = allPkgs
+			}
+		}
+		modIdx, err = buildModuleFuncIndex(absRoot, pkgs)
+		if err != nil {
+			return summary, err
+		}
+		chainCfg := Config{OptionalMethodChains: true}
+		for _, pkg := range pkgs {
+			paths, n, e := modernizePackageOptionalChains(pkg, chainCfg, modIdx)
+			if e != nil {
+				fmt.Fprintf(os.Stderr, "%s optional chains: %v\n", pkg.dir, e)
+				continue
+			}
+			summary.changedFiles += len(paths)
+			summary.changedPaths = append(summary.changedPaths, paths...)
+			summary.counts.optionalChains += n.optionalChains
+		}
 	}
 	return summary, nil
 }
@@ -197,7 +229,7 @@ func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (change
 		}
 	}
 	if cfg.NilablePointersAnnotate {
-		nilableChanged, verifiedNonNil = applyPtrAnnotations(fset, files)
+		nilableChanged, verifiedNonNil = applyPtrAnnotations(fset, pkg.paths, files)
 	}
 	pkgEmbed := collectPackageEmbedOnlyTypes(files)
 	pkgExtraFields := collectPackageHasExtraErrorTypes(files)
@@ -256,6 +288,33 @@ func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (change
 		}
 	}
 	counts.verifiedNonNil = verifiedNonNil
+	return changedPaths, counts, nil
+}
+
+func modernizePackageOptionalChains(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (changedPaths []string, counts rewriteCounts, err error) {
+	fset := token.NewFileSet()
+	files := make([]*ast.File, len(pkg.paths))
+	for i, path := range pkg.paths {
+		f, e := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if e != nil {
+			return nil, counts, e
+		}
+		f.NilablePointersRegions = buildNilablePointersRegions(collectNilablePointersDirectives(f))
+		files[i] = f
+	}
+	for i, path := range pkg.paths {
+		_, chains := modernizeNilReceivers(files[i], files, cfg, modIdx)
+		counts.optionalChains += chains
+		coalesced := coalesceModuleSliceFieldCallArgs(files[i], fset, path)
+		if chains == 0 && !coalesced {
+			continue
+		}
+		if err := writeFormattedFile(path, fset, files[i]); err != nil {
+			return nil, counts, err
+		}
+		changedPaths = append(changedPaths, path)
+		fmt.Println(path)
+	}
 	return changedPaths, counts, nil
 }
 
@@ -326,7 +385,7 @@ func modernizeFile(path string) (bool, int, error) {
 	if cfg.RemoveNilReceiverGuards || cfg.OptionalMethodChains {
 		modernizeNilReceivers(f, []*ast.File{f}, cfg, nil)
 	}
-	changedFlags, _ := applyPtrAnnotations(fset, []*ast.File{f})
+	changedFlags, _ := applyPtrAnnotations(fset, []string{path}, []*ast.File{f})
 	_, countsPart, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, path, changedFlags[0], nil, nil, cfg, nil, true)
 	return changed, countsPart.callBang + countsPart.errBang, err
 }

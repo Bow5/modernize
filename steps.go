@@ -23,7 +23,7 @@ type modernizeStep struct {
 }
 
 // modernizeSteps follows go/README.md migration order (formatting first, then
-// nil receivers, nilable pointers, T!/!, structured errors, struct/interface shorthand).
+// nil receivers, T!/!, structured errors, syntax sugar, struct shorthand, nilable pointers last).
 var modernizeSteps = []modernizeStep{
 	{
 		name:      "formatting",
@@ -43,20 +43,6 @@ var modernizeSteps = []modernizeStep{
 			return Config{
 				RemoveNilReceiverGuards: base.RemoveNilReceiverGuards,
 				OptionalMethodChains:    base.OptionalMethodChains,
-			}
-		},
-	},
-	{
-		name:      "nilable_pointers",
-		commitMsg: "modernize: nilable pointer annotations",
-		enabled: func(c Config) bool {
-			return c.NilablePointersGoMod || c.NilablePointersGenDisable || c.NilablePointersAnnotate
-		},
-		stepConfig: func(base Config) Config {
-			return Config{
-				NilablePointersGoMod:      base.NilablePointersGoMod,
-				NilablePointersGenDisable: base.NilablePointersGenDisable,
-				NilablePointersAnnotate:   base.NilablePointersAnnotate,
 			}
 		},
 	},
@@ -136,6 +122,21 @@ var modernizeSteps = []modernizeStep{
 		},
 		stepConfig: func(base Config) Config {
 			return Config{ShorthandTypes: base.ShorthandTypes}
+		},
+	},
+	{
+		name:      "nilable_pointers",
+		commitMsg: "modernize: nilable pointer annotations",
+		enabled: func(c Config) bool {
+			return c.NilablePointersGoMod || c.NilablePointersGenDisable || c.NilablePointersAnnotate
+		},
+		stepConfig: func(base Config) Config {
+			return Config{
+				NilablePointersGoMod:      base.NilablePointersGoMod,
+				NilablePointersGenDisable: base.NilablePointersGenDisable,
+				NilablePointersAnnotate:   base.NilablePointersAnnotate,
+				OptionalMethodChains:      base.OptionalMethodChains,
+			}
 		},
 	},
 }
