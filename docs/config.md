@@ -62,6 +62,8 @@ To disable only `errors.Base` embedding:
 | `errors_base_message_field_refs` | `true` | Rewrite `.msg` (etc.) field reads to `.Base.Message` after embed-only migration |
 | `errors_base_usages` | `true` | Rewrite constructions (`NewCustom`, constructor returns, assign/`var` composites) |
 | `shorthand_types` | `true` | Rewrite `type T struct` / `type I interface` to `struct T` / `interface I` |
+| `interpolated_strings` | `true` | Rewrite `fmt.Sprintf` / string `+` to interpolated `"…{expr}…"` syntax |
+| `interface_nil_eq_comments` | `true` | Insert `//FIXME: Make sure still works after interface == nil change.` above interface-typed `== nil` / `!= nil` (comment only) |
 | `step_commits` | `true` | When the target is in a git or hg repo, run each pass separately and commit its changes (formatting first, then nil receivers, nilable pointers, `T!` / `!`, structured errors, shorthand) |
 | `remove_nil_receiver_guards` | `true` | Remove `if recv == nil { return … }` guards in pointer-receiver methods (unreachable in Bow — [nil receivers](../../go/doc/new_features/nil_receivers.md)) |
 | `optional_method_chains` | `true` | Add `?.` for nilable field reads and for methods that previously had `if recv == nil { return nil / zero }` guards. Does **not** insert `if recv != nil` wrappers around nilable method calls — leave `reqInfo.SetTags(...)` as-is. |
