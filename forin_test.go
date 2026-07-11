@@ -30,8 +30,8 @@ func f(items []string) {
 		t.Fatal(err)
 	}
 	n := modernizeForIn(f)
-	if n != 2 {
-		t.Fatalf("modernizeForIn rewrote %d, want 2", n)
+	if n != 3 {
+		t.Fatalf("modernizeForIn rewrote %d, want 3", n)
 	}
 	var buf strings.Builder
 	if err := format.Node(&buf, fset, f); err != nil {
@@ -44,8 +44,8 @@ func f(items []string) {
 	if !strings.Contains(out, "for i, item in items") {
 		t.Fatalf("expected for i, item in items:\n%s", out)
 	}
-	if !strings.Contains(out, "for k := range items") {
-		t.Fatalf("expected index-only range to stay:\n%s", out)
+	if !strings.Contains(out, "for k, _ in items") {
+		t.Fatalf("expected for k, _ in items:\n%s", out)
 	}
 	ast.Inspect(f, func(n ast.Node) bool {
 		rs, ok := n.(*ast.RangeStmt)

@@ -13,6 +13,14 @@ func modernizeForIn(f *ast.File) int {
 			return true
 		}
 		if rs.Value == nil {
+			if rs.Key == nil || isBlankIdent(rs.Key) {
+				return true
+			}
+			// for k := range x -> for k, _ in x
+			rs.Value = &ast.Ident{NamePos: rs.Key.End(), Name: "_"}
+			rs.InPos = rs.Range
+			rs.Range = token.NoPos
+			count++
 			return true
 		}
 		if !isBlankIdent(rs.Key) {

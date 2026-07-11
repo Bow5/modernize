@@ -35,6 +35,9 @@ func modernizeNegativeSlice(fset *token.FileSet, f *ast.File) (edits []sourceEdi
 				})
 			}
 		}
+		if omit, ok := modernizeOmitZeroLowBound(fset, se); ok && len(local) > 0 {
+			local = append(local, omit)
+		}
 		if len(local) > 0 {
 			edits = append(edits, local...)
 			count++
@@ -42,6 +45,21 @@ func modernizeNegativeSlice(fset *token.FileSet, f *ast.File) (edits []sourceEdi
 		return true
 	})
 	return edits, count
+}
+
+func modernizeOmitZeroLowBound(fset *token.FileSet, se *ast.SliceExpr) (sourceEdit, bool) {
+	if se.Low == nil || !modernizeIsZeroInt(se.Low) {
+		return sourceEdit{}, false
+	}
+	return sourceEdit{
+		start: fset.Position(se.Low.Pos()).Offset,
+		end:   fset.Position(se.Low.End()).Offset,
+	}, true
+}
+
+func modernizeIsZeroInt(e ast.Expr) bool {
+	bl, ok := ast.Unparen(e).(*ast.BasicLit)
+	return ok && bl.Kind == token.INT && bl.Value == "0"
 }
 
 func modernizeLenMinusBound(fset *token.FileSet, slice ast.Expr, bound ast.Expr) (string, bool) {
