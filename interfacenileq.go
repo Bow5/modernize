@@ -56,7 +56,7 @@ func labelInterfaceNilComparisons(fset *token.FileSet, files []*ast.File, import
 			out[fi] = append(out[fi], sourceEdit{
 				start: lineStart,
 				end:   lineStart,
-				text:  interfaceNilEqFixme + "\n",
+				text:  []byte(interfaceNilEqFixme + "\n"),
 			})
 			return true
 		})
@@ -88,10 +88,7 @@ func lineStartOffset(fset *token.FileSet, f *ast.File, line int) int {
 	if fname == nil {
 		return -1
 	}
-	offset, err := fname.Offset(fname.LineStart(line))
-	if err != nil {
-		return -1
-	}
+	offset := fname.Offset(fname.LineStart(line))
 	return offset
 }
 
