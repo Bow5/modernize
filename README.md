@@ -131,7 +131,7 @@ go build -o modernize .
 # or MODERNIZE_CONFIG=/path/to/modernize.json
 ```
 
-With `step_commits` enabled (default), each rewrite pass is applied and committed separately when the target is a git or hg repository. See [docs/config.md](docs/config.md#step-commits).
+With `step_commits` enabled (default), each rewrite pass is applied and committed separately when the target is a git or hg repository and the matching `git` or `hg` command is on `PATH`. See [docs/config.md](docs/config.md#step-commits).
 
 Each modified file path is printed; a summary count is written to stderr.
 
