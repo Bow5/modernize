@@ -1153,10 +1153,15 @@ func (em *errorsModernizer) canReplaceFmtErrorf(call *ast.CallExpr) bool {
 }
 
 func (em *errorsModernizer) replaceFmtErrorfWithNew(call *ast.CallExpr) {
+	lit, ok := formatCallArgsToInterpLit(em.fset, call.Args)
+	if !ok {
+		return
+	}
 	call.Fun = &ast.SelectorExpr{
 		X:   &ast.Ident{Name: "errors"},
 		Sel: &ast.Ident{Name: "New"},
 	}
+	call.Args = []ast.Expr{lit}
 	em.ensureImport("errors")
 	em.mark()
 }

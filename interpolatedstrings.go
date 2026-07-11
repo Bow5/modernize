@@ -18,8 +18,12 @@ type interpSegment struct {
 }
 
 func modernizeInterpolatedStrings(fset *token.FileSet, f *ast.File, src []byte) (edits []sourceEdit, count int) {
-	// Order: Sprintf → concat → escape literal braces in remaining strings.
+	// Order: Sprintf → *f funcs → errors.New → concat → escape literal braces.
 	edits, n := rewriteSprintfToInterp(fset, f, src, edits)
+	count += n
+	edits, n = rewriteFormatFuncsToNonF(fset, f, src, edits)
+	count += n
+	edits, n = rewriteErrorsNewToInterp(fset, f, src, edits)
 	count += n
 	edits, n = rewriteConcatToInterp(fset, f, src, edits)
 	count += n
@@ -75,6 +79,104 @@ func rewriteSprintfToInterp(fset *token.FileSet, f *ast.File, src []byte, edits 
 			return true
 		}
 		text, ok := renderInterpolatedString(fset, segs)
+		if !ok {
+			return true
+		}
+		start := fset.Position(call.Pos()).Offset
+		end := fset.Position(call.End()).Offset
+		edits = append(edits, sourceEdit{start: start, end: end, text: []byte(text)})
+		count++
+		return true
+	})
+	return edits, count
+}
+
+func rewriteFormatFuncsToNonF(fset *token.FileSet, f *ast.File, src []byte, edits []sourceEdit) ([]sourceEdit, int) {
+	skip := byteSliceStringLits(f)
+	count := 0
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		rw, ok := matchFormatFuncRewrite(sel)
+		if !ok {
+			return true
+		}
+		if rw.method == "Errorf" && isFmtErrorf(call) {
+			return true // structured_errors handles fmt.Errorf → errors.New
+		}
+		if rw.formatIndex >= len(call.Args) {
+			return true
+		}
+		formatArg := call.Args[rw.formatIndex]
+		if lit, ok := formatArg.(*ast.BasicLit); ok && skip[lit] {
+			return true
+		}
+		valueArgs := call.Args[rw.formatIndex + 1:]
+		interp, ok := formatCallArgsToInterpString(fset, formatArg, valueArgs)
+		if !ok {
+			return true
+		}
+		text, ok := renderNonFCall(fset, sel.X, rw.nonF, rw.formatIndex, call.Args[:rw.formatIndex], interp)
+		if !ok {
+			return true
+		}
+		start := fset.Position(call.Pos()).Offset
+		end := fset.Position(call.End()).Offset
+		edits = append(edits, sourceEdit{start: start, end: end, text: []byte(text)})
+		count++
+		return true
+	})
+	return edits, count
+}
+
+func renderNonFCall(fset *token.FileSet, recv ast.Expr, nonF string, formatIndex int, prefixArgs []ast.Expr, interp string) (string, bool) {
+	var b strings.Builder
+	if err := format.Node(&b, fset, recv); err != nil {
+		return "", false
+	}
+	b.WriteByte('.')
+	b.WriteString(nonF)
+	b.WriteByte('(')
+	for i, arg := range prefixArgs {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		var argBuf bytes.Buffer
+		if err := format.Node(&argBuf, fset, arg); err != nil {
+			return "", false
+		}
+		b.WriteString(argBuf.String())
+	}
+	if len(prefixArgs) > 0 {
+		b.WriteString(", ")
+	}
+	b.WriteString(interp)
+	b.WriteByte(')')
+	return b.String(), true
+}
+
+func rewriteErrorsNewToInterp(fset *token.FileSet, f *ast.File, src []byte, edits []sourceEdit) ([]sourceEdit, int) {
+	skip := byteSliceStringLits(f)
+	count := 0
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || len(call.Args) < 2 || !isErrorsNew(call) {
+			return true
+		}
+		if lit, ok := call.Args[0].(*ast.BasicLit); ok && skip[lit] {
+			return true
+		}
+		interp, ok := formatCallArgsToInterpString(fset, call.Args[0], call.Args[1:])
+		if !ok {
+			return true
+		}
+		text, ok := renderNonFCall(fset, &ast.Ident{Name: "errors"}, "New", 0, nil, interp)
 		if !ok {
 			return true
 		}

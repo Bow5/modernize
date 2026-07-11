@@ -29,7 +29,8 @@ func f() error {
 }
 
 func g() error {
-	return fmt.Errorf("value %s", "x")
+	name := "x"
+	return fmt.Errorf("value %s", name)
 }
 
 func h(err error) error {
@@ -53,8 +54,8 @@ func h(err error) error {
 	if !strings.Contains(out, `errors.New("something failed")`) {
 		t.Fatalf("missing errors.New:\n%s", out)
 	}
-	if !strings.Contains(out, `errors.New("value %s", "x")`) {
-		t.Fatalf("missing formatted errors.New:\n%s", out)
+	if !strings.Contains(out, `errors.New("value {name}")`) {
+		t.Fatalf("missing interpolated errors.New, got:\n%s", out)
 	}
 	if !strings.Contains(out, `fmt.Errorf("wrap: %w", err)`) {
 		t.Fatalf("should keep wrapped fmt.Errorf:\n%s", out)
@@ -371,7 +372,7 @@ func ErrorToErr(err error) Err {
 	if strings.Contains(out, "InitCustom") {
 		t.Fatalf("should not InitCustom non-constructor returns:\n%s", out)
 	}
-	if !strings.Contains(out, "return Err{msg: err.Error()}") {
+	if !strings.Contains(out, `return Err\{msg: err.Error()\}`) {
 		t.Fatalf("expected plain return:\n%s", out)
 	}
 }

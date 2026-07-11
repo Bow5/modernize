@@ -29,7 +29,7 @@ func f(err error, i I, s *int) {
 		t.Fatalf("got %d labels, want 2", len(edits))
 	}
 	for _, e := range edits {
-		if e.text != interfaceNilEqFixme + "\n" {
+		if string(e.text) != interfaceNilEqFixme + "\n" {
 			t.Fatalf("unexpected edit text %q", e.text)
 		}
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"go/parser"
 	"go/token"
+	"strings"
 	"testing"
 )
 
@@ -79,5 +80,46 @@ func f(i int) int {
 	_, n := rewriteConcatToInterp(fset, f, nil, nil)
 	if n != 0 {
 		t.Fatalf("rewrote %d, want 0 for integer add", n)
+	}
+}
+
+func TestPrintfToNonF(t *testing.T) {
+	const src = `package p
+import "fmt"
+func f(name string) {
+	fmt.Printf("hello %s", name)
+}`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edits, n := rewriteFormatFuncsToNonF(fset, f, []byte(src), nil)
+	if n != 1 {
+		t.Fatalf("rewrote %d, want 1", n)
+	}
+	if !strings.Contains(string(edits[0].text), `fmt.Print("hello {name}")`) {
+		t.Fatalf("got %q", edits[0].text)
+	}
+}
+
+func TestErrorsNewToInterp(t *testing.T) {
+	const src = `package p
+import "errors"
+func f(endpoint string, err error) error {
+	return errors.New("invalid %s: %v", endpoint, err)
+}`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edits, n := rewriteErrorsNewToInterp(fset, f, []byte(src), nil)
+	if n != 1 {
+		t.Fatalf("rewrote %d, want 1", n)
+	}
+	got := string(edits[0].text)
+	if !strings.Contains(got, `errors.New("invalid {endpoint}`) {
+		t.Fatalf("got %q", got)
 	}
 }
