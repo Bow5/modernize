@@ -119,6 +119,16 @@ var modernizeSteps = []modernizeStep{
 		},
 	},
 	{
+		name:      "negative_slice_indices",
+		commitMsg: "modernize: negative slice index syntax",
+		enabled: func(c Config) bool {
+			return c.NegativeSliceIndices
+		},
+		stepConfig: func(base Config) Config {
+			return Config{NegativeSliceIndices: base.NegativeSliceIndices}
+		},
+	},
+	{
 		name:      "shorthand_types",
 		commitMsg: "modernize: struct and interface shorthand",
 		enabled: func(c Config) bool {

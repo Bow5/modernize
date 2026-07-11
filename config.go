@@ -24,6 +24,7 @@ type Config struct {
 	ForInSyntax                      bool `json:"for_in_syntax"`
 	ShorthandLiterals                bool `json:"shorthand_literals"`
 	SpreadCallSyntax                 bool `json:"spread_call_syntax"`
+	NegativeSliceIndices             bool `json:"negative_slice_indices"`
 	StepCommits                      bool `json:"step_commits"`
 	RemoveNilReceiverGuards          bool `json:"remove_nil_receiver_guards"`
 	OptionalMethodChains             bool `json:"optional_method_chains"`
@@ -46,6 +47,7 @@ func DefaultConfig() Config {
 		ForInSyntax:                      true,
 		ShorthandLiterals:                true,
 		SpreadCallSyntax:                 true,
+		NegativeSliceIndices:             true,
 		StepCommits:                      true,
 		RemoveNilReceiverGuards:          true,
 		OptionalMethodChains:             true,
