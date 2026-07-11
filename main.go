@@ -41,7 +41,7 @@ func main() {
 			}
 			return
 		}
-		fmt.Fprintf(os.Stderr, "step_commits enabled but no git/hg repo found; running without commits\n")
+		fmt.Fprintf(os.Stderr, "step_commits enabled but no git/hg repo found (or git/hg not on PATH); running without commits\n")
 	}
 
 	summary, err := runModernize(absRoot, cfg)

@@ -181,12 +181,32 @@ func findVCSRoot(start string) (root string, kind vcsKind) {
 	}
 }
 
+func vcsBinaryOnPath(kind vcsKind) bool {
+	var name string
+	switch kind {
+	case vcsGit:
+		name = "git"
+	case vcsHg:
+		name = "hg"
+	default:
+		return false
+	}
+	_, err := exec.LookPath(name)
+	return err == nil
+}
+
 func isGitRepo(dir string) bool {
+	if !vcsBinaryOnPath(vcsGit) {
+		return false
+	}
 	_, err := os.Stat(filepath.Join(dir, ".git"))
 	return err == nil
 }
 
 func isHgRepo(dir string) bool {
+	if !vcsBinaryOnPath(vcsHg) {
+		return false
+	}
 	_, err := os.Stat(filepath.Join(dir, ".hg"))
 	return err == nil
 }
@@ -317,6 +337,9 @@ func runModernizePass(absRoot string, cfg Config) ([]string, error) {
 }
 
 func commitStep(vcsRoot string, kind vcsKind, message string, paths []string) (bool, error) {
+	if !vcsBinaryOnPath(kind) {
+		return false, fmt.Errorf("%s not found on PATH", kind)
+	}
 	paths = filterVCSTracked(vcsRoot, kind, paths)
 	if len(paths) == 0 {
 		return false, nil

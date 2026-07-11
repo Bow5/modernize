@@ -70,7 +70,7 @@ To disable only `errors.Base` embedding:
 
 ## Step commits
 
-With `step_commits` enabled (default), modernize runs passes in [Bow README](https://github.com/Bow5/Bow) migration order and creates one VCS commit per pass when the target tree is inside a **git** or **hg** repository:
+With `step_commits` enabled (default), modernize runs passes in [Bow README](https://github.com/Bow5/Bow) migration order and creates one VCS commit per pass when the target tree is inside a **git** or **hg** repository and the corresponding `git` or `hg` command is on `PATH`:
 
 1. `gofmt` formatting only
 2. Nil receivers (remove `if recv == nil { … }` guards, optional `?.` method chains)
