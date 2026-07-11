@@ -91,7 +91,7 @@ func (a *ptrAnnotator) markLookupResults() {
 			}
 			flat := flattenFields("result", fn.Name.Name, fn.Type.Results)
 			for _, tf := range flat {
-				if plainStarType(tf.typ) != nil {
+				if plainRefType(tf.typ) != nil {
 					a.nilable[tf.key] = true
 					a.lookupResult[tf.key] = true
 				}
@@ -170,7 +170,7 @@ func (a *ptrAnnotator) collectGenDecl(g *ast.GenDecl) {
 	case token.VAR:
 		for _, spec := range g.Specs {
 			vs, ok := spec.(*ast.ValueSpec)
-			if !ok || plainStarType(vs.Type) == nil {
+			if !ok || plainRefType(vs.Type) == nil {
 				continue
 			}
 			for _, name := range vs.Names {
@@ -190,7 +190,7 @@ func (a *ptrAnnotator) collectStructFields(typeName string, typ ast.Expr) {
 		return
 	}
 	for _, field := range st.Fields.List {
-		if plainStarType(field.Type) == nil {
+		if plainRefType(field.Type) == nil {
 			continue
 		}
 		for _, name := range field.Names {
@@ -229,7 +229,7 @@ func (a *ptrAnnotator) collectFuncDecl(fn *ast.FuncDecl) {
 	}
 	if fn.Recv != nil && len(fn.Recv.List) > 0 {
 		recv := fn.Recv.List[0]
-		if plainStarType(recv.Type) != nil {
+		if plainRefType(recv.Type) != nil {
 			rname := "recv"
 			if len(recv.Names) > 0 {
 				rname = recv.Names[0].Name
@@ -248,7 +248,7 @@ func (a *ptrAnnotator) collectFuncTypeSites(kind, owner string, fields *ast.Fiel
 	}
 	idx := 0
 	for _, field := range fields.List {
-		if plainStarType(field.Type) == nil {
+		if plainRefType(field.Type) == nil {
 			idx += max(1, len(field.Names))
 			continue
 		}
@@ -277,7 +277,7 @@ func (a *ptrAnnotator) collectLocalVars(owner string, body *ast.BlockStmt) {
 		}
 		for _, spec := range g.Specs {
 			vs, ok := spec.(*ast.ValueSpec)
-			if !ok || plainStarType(vs.Type) == nil {
+			if !ok || plainRefType(vs.Type) == nil {
 				continue
 			}
 			for _, name := range vs.Names {
@@ -328,7 +328,7 @@ func recvParamName(fn *ast.FuncDecl) string {
 	if fn == nil || fn.Recv == nil || len(fn.Recv.List) == 0 || len(fn.Recv.List[0].Names) == 0 {
 		return ""
 	}
-	if plainStarType(fn.Recv.List[0].Type) == nil {
+	if plainRefType(fn.Recv.List[0].Type) == nil {
 		return ""
 	}
 	return fn.Recv.List[0].Names[0].Name
@@ -387,7 +387,7 @@ func (a *ptrAnnotator) scanReturn(ret *ast.ReturnStmt, fn *ast.FuncDecl) {
 	flat := flattenFields("result", fn.Name.Name, fn.Type.Results)
 	lookup := a.isLookupResult(fn)
 	for i, expr := range ret.Results {
-		if i >= len(flat) || plainStarType(flat[i].typ) == nil {
+		if i >= len(flat) || plainRefType(flat[i].typ) == nil {
 			continue
 		}
 		if lookup {
@@ -428,7 +428,7 @@ func (a *ptrAnnotator) scanCall(call *ast.CallExpr) {
 			if !isNilExpr(arg) || i >= len(flat) {
 				continue
 			}
-			if plainStarType(flat[i].typ) != nil {
+			if plainRefType(flat[i].typ) != nil {
 				a.nilable[flat[i].key] = true
 			}
 		}
@@ -442,7 +442,7 @@ func flattenFields(kind, owner string, fields *ast.FieldList) []typedField {
 	var out []typedField
 	idx := 0
 	for _, field := range fields.List {
-		if plainStarType(field.Type) == nil {
+		if plainRefType(field.Type) == nil {
 			idx += max(1, len(field.Names))
 			continue
 		}
@@ -625,7 +625,7 @@ func (a *ptrAnnotator) propagateNilableFromCalleeReturnsOnce() bool {
 				}
 				flat := flattenFields("result", curFunc.Name.Name, curFunc.Type.Results)
 				for i, expr := range x.Results {
-					if i >= len(flat) || plainStarType(flat[i].typ) == nil {
+					if i >= len(flat) || plainRefType(flat[i].typ) == nil {
 						continue
 					}
 					call, ok := ast.Unparen(expr).(*ast.CallExpr)
@@ -841,7 +841,7 @@ func selectorField(sel *ast.SelectorExpr) (typeName, field string, ok bool) {
 func (a *ptrAnnotator) countVerifiedNonNilPointers() int {
 	n := 0
 	for key, typ := range a.typeNode {
-		if plainStarType(typ) == nil {
+		if plainRefType(typ) == nil {
 			continue
 		}
 		if a.nilable[key] {
@@ -886,7 +886,7 @@ func syncMethodReturnsForNilableFields(fset *token.FileSet, f *ast.File, ann *pt
 		if !ok || fn.Recv == nil || fn.Type == nil || fn.Type.Results == nil || len(fn.Type.Results.List) != 1 {
 			continue
 		}
-		if plainStarType(fn.Type.Results.List[0].Type) == nil {
+		if plainRefType(fn.Type.Results.List[0].Type) == nil {
 			continue
 		}
 		recvName, recvTypeName, ok := recvNameAndType(fn.Recv)
@@ -997,7 +997,7 @@ func rewriteGenDeclTypes(fset *token.FileSet, f *ast.File, g *ast.GenDecl, ann *
 	case token.VAR:
 		for _, spec := range g.Specs {
 			vs, ok := spec.(*ast.ValueSpec)
-			if !ok || plainStarType(vs.Type) == nil {
+			if !ok || plainRefType(vs.Type) == nil {
 				continue
 			}
 			for _, name := range vs.Names {
@@ -1019,7 +1019,7 @@ func rewriteStructFieldTypes(fset *token.FileSet, f *ast.File, typeName string, 
 	}
 	changed := false
 	for _, field := range st.Fields.List {
-		if plainStarType(field.Type) == nil {
+		if plainRefType(field.Type) == nil {
 			continue
 		}
 		for _, name := range field.Names {
@@ -1068,7 +1068,7 @@ func rewriteFuncDeclTypes(fset *token.FileSet, f *ast.File, fn *ast.FuncDecl, an
 	name := fn.Name.Name
 	if fn.Recv != nil {
 		for _, recv := range fn.Recv.List {
-			if plainStarType(recv.Type) == nil {
+			if plainRefType(recv.Type) == nil {
 				continue
 			}
 			rname := "recv"
@@ -1100,7 +1100,7 @@ func rewriteFieldListTypes(fset *token.FileSet, f *ast.File, kind, owner string,
 	changed := false
 	idx := 0
 	for _, field := range fields.List {
-		if plainStarType(field.Type) == nil {
+		if plainRefType(field.Type) == nil {
 			idx += max(1, len(field.Names))
 			continue
 		}
@@ -1137,7 +1137,7 @@ func rewriteLocalVarTypes(fset *token.FileSet, f *ast.File, owner string, body *
 		}
 		for _, spec := range g.Specs {
 			vs, ok := spec.(*ast.ValueSpec)
-			if !ok || plainStarType(vs.Type) == nil {
+			if !ok || plainRefType(vs.Type) == nil {
 				continue
 			}
 			for _, name := range vs.Names {
@@ -1178,13 +1178,32 @@ func nptDisabledAt(fset *token.FileSet, pos token.Pos, files []*ast.File) bool {
 	return false
 }
 
-func plainStarType(t ast.Expr) *ast.StarExpr {
+func plainRefType(t ast.Expr) ast.Expr {
 	t = ast.Unparen(t)
 	if nilable, ok := t.(*ast.NilableTypeExpr); ok {
 		t = ast.Unparen(nilable.X)
 	}
+	switch x := t.(type) {
+	case *ast.StarExpr:
+		if isMigratablePointer(x) {
+			return t
+		}
+	case *ast.ArrayType:
+		if x.Len == nil {
+			return t
+		}
+	case *ast.MapType:
+		return t
+	case *ast.ChanType:
+		return t
+	}
+	return nil
+}
+
+func plainStarType(t ast.Expr) *ast.StarExpr {
+	t = plainRefType(t)
 	star, ok := t.(*ast.StarExpr)
-	if !ok || !isMigratablePointer(star) {
+	if !ok {
 		return nil
 	}
 	return star
@@ -1204,22 +1223,25 @@ func isMigratablePointer(star *ast.StarExpr) bool {
 	return true
 }
 
-func setPointerNilable(t ast.Expr, nilable bool) ast.Expr {
+func setRefNilable(t ast.Expr, nilable bool) ast.Expr {
 	t = ast.Unparen(t)
 	if nilable {
 		if _, ok := t.(*ast.NilableTypeExpr); ok {
 			return t
 		}
-		star, ok := t.(*ast.StarExpr)
-		if !ok {
+		if plainRefType(t) == nil {
 			return t
 		}
-		return &ast.NilableTypeExpr{X: star, QPos: star.End()}
+		return &ast.NilableTypeExpr{X: t, QPos: t.End()}
 	}
 	if n, ok := t.(*ast.NilableTypeExpr); ok {
 		return n.X
 	}
 	return t
+}
+
+func setPointerNilable(t ast.Expr, nilable bool) ast.Expr {
+	return setRefNilable(t, nilable)
 }
 
 func max(a, b int) int {
@@ -1275,7 +1297,7 @@ func splitNilOrReturnGuards(fset *token.FileSet, f *ast.File, ann *ptrAnnotator)
 			continue
 		}
 		flat := flattenFields("result", fn.Name.Name, fn.Type.Results)
-		if len(flat) != 1 || plainStarType(flat[0].typ) == nil || ann.nilable[flat[0].key] {
+		if len(flat) != 1 || plainRefType(flat[0].typ) == nil || ann.nilable[flat[0].key] {
 			continue
 		}
 		if splitNilOrReturnInBlock(fn.Body, &changed) {
@@ -1370,7 +1392,7 @@ func fixFindPassthroughReturns(fset *token.FileSet, f *ast.File, ann *ptrAnnotat
 			continue
 		}
 		flat := flattenFields("result", fn.Name.Name, fn.Type.Results)
-		if len(flat) != 1 || plainStarType(flat[0].typ) == nil || ann.nilable[flat[0].key] {
+		if len(flat) != 1 || plainRefType(flat[0].typ) == nil || ann.nilable[flat[0].key] {
 			continue
 		}
 		for i, st := range fn.Body.List {

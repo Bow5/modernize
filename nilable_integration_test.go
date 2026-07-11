@@ -347,3 +347,61 @@ func setHeaders(rs *HTTPRangeSpec) {
 		t.Fatalf("expected param reassigned from nilable callee to be nilable:\n%s", out)
 	}
 }
+
+func TestPtrAnnotatorSliceAndMapNilEvidence(t *testing.T) {
+	const src = `package p
+
+func findSlice() []string {
+	return nil
+}
+
+func findMap() map[string]int {
+	return nil
+}
+
+func findChan() chan int {
+	return nil
+}
+
+func use() {
+	var s []string
+	s = nil
+	var m map[string]int
+	m = nil
+	var ch chan int
+	ch = nil
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ann := newPtrAnnotator(fset, []*ast.File{f})
+	ann.analyze()
+
+	markNilable := func(kind, owner, name string, index int) {
+		key := ptrSiteKey{kind: kind, owner: owner, name: name, index: index}
+		if !ann.nilable[key] {
+			t.Errorf("%v should be nilable", key)
+		}
+	}
+	markNilable("result", "findSlice", "", 0)
+	markNilable("result", "findMap", "", 0)
+	markNilable("result", "findChan", "", 0)
+	markNilable("var", "use", "s", -1)
+	markNilable("var", "use", "m", -1)
+	markNilable("var", "use", "ch", -1)
+
+	rewriteFilePointerTypes(fset, f, ann)
+	out := formatTestFile(fset, f)
+	if !strings.Contains(out, "[]string?") {
+		t.Fatalf("expected nilable slice:\n%s", out)
+	}
+	if !strings.Contains(out, "map[string]int?") {
+		t.Fatalf("expected nilable map:\n%s", out)
+	}
+	if !strings.Contains(out, "chan int?") {
+		t.Fatalf("expected nilable channel:\n%s", out)
+	}
+}

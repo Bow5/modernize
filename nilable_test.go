@@ -31,6 +31,34 @@ func TestHasNilablePointersDirective(t *testing.T) {
 	}
 }
 
+func TestSetRefNilable(t *testing.T) {
+	slice := &ast.ArrayType{Elt: &ast.Ident{Name: "string"}}
+	got := setRefNilable(slice, true)
+	n, ok := got.(*ast.NilableTypeExpr)
+	if !ok {
+		t.Fatalf("got %T", got)
+	}
+	if _, ok := n.X.(*ast.ArrayType); !ok {
+		t.Fatalf("expected slice inside nilable, got %T", n.X)
+	}
+	back := setRefNilable(got, false)
+	if _, ok := back.(*ast.ArrayType); !ok {
+		t.Fatalf("expected slice back, got %T", back)
+	}
+}
+
+func TestSetRefNilableChan(t *testing.T) {
+	ch := &ast.ChanType{Value: &ast.Ident{Name: "int"}}
+	got := setRefNilable(ch, true)
+	n, ok := got.(*ast.NilableTypeExpr)
+	if !ok {
+		t.Fatalf("got %T", got)
+	}
+	if _, ok := n.X.(*ast.ChanType); !ok {
+		t.Fatalf("expected chan inside nilable, got %T", n.X)
+	}
+}
+
 func TestSetPointerNilable(t *testing.T) {
 	star := &ast.StarExpr{X: &ast.Ident{Name: "string"}}
 	got := setPointerNilable(star, true)
