@@ -381,7 +381,7 @@ func (em *errorsModernizer) rewriteExtraFieldType(info *customErrorType) int {
 func (em *errorsModernizer) removeFuncDecl(target *ast.FuncDecl) {
 	for i, decl := range em.file.Decls {
 		if fn, ok := decl.(*ast.FuncDecl); ok && fn == target {
-			em.file.Decls = append(em.file.Decls[:i], em.file.Decls[i+1:]...)
+			em.file.Decls = append(em.file.Decls[:i], em.file.Decls[i + 1:]...)
 			em.mark()
 			return
 		}
@@ -469,7 +469,7 @@ func (em *errorsModernizer) rewriteSetMsgFactory(fn *ast.FuncDecl) bool {
 			Rhs: []ast.Expr{&ast.CallExpr{
 				Fun: &ast.Ident{Name: ptName},
 				Args: []ast.Expr{&ast.CallExpr{
-					Fun: &ast.Ident{Name: "new"},
+					Fun:  &ast.Ident{Name: "new"},
 					Args: []ast.Expr{&ast.Ident{Name: typeParam}},
 				}},
 			}},
@@ -637,7 +637,7 @@ func (em *errorsModernizer) importLocalName(path string) string {
 
 func pathBaseName(path string) string {
 	if i := strings.LastIndex(path, "/"); i >= 0 {
-		return path[i+1:]
+		return path[i + 1:]
 	}
 	return path
 }
@@ -681,9 +681,9 @@ func (em *errorsModernizer) removeImport(path string) bool {
 			if p != path {
 				continue
 			}
-			gen.Specs = append(gen.Specs[:si], gen.Specs[si+1:]...)
+			gen.Specs = append(gen.Specs[:si], gen.Specs[si + 1:]...)
 			if len(gen.Specs) == 0 {
-				em.file.Decls = append(em.file.Decls[:di], em.file.Decls[di+1:]...)
+				em.file.Decls = append(em.file.Decls[:di], em.file.Decls[di + 1:]...)
 			}
 			em.mark()
 			return true

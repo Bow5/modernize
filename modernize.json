@@ -15,7 +15,8 @@
   "shorthand_literals": true,
   "spread_call_syntax": true,
   "negative_slice_indices": true,
-  "interpolated_strings": true,
+	"interpolated_strings": true,
+  "interface_nil_eq_comments": true,
   "step_commits": true,
   "remove_nil_receiver_guards": true,
   "optional_method_chains": true

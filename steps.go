@@ -66,11 +66,11 @@ var modernizeSteps = []modernizeStep{
 		stepConfig: func(base Config) Config {
 			return Config{
 				FmtErrorfToErrorsNew:           base.FmtErrorfToErrorsNew,
-				ErrorsBaseEmbed:                  base.ErrorsBaseEmbed,
-				ErrorsBaseSetMsg:                 base.ErrorsBaseSetMsg,
-				ErrorsBasePositionalComposites:   base.ErrorsBasePositionalComposites,
-				ErrorsBaseMessageFieldRefs:       base.ErrorsBaseMessageFieldRefs,
-				ErrorsBaseUsages:                 base.ErrorsBaseUsages,
+				ErrorsBaseEmbed:                base.ErrorsBaseEmbed,
+				ErrorsBaseSetMsg:               base.ErrorsBaseSetMsg,
+				ErrorsBasePositionalComposites: base.ErrorsBasePositionalComposites,
+				ErrorsBaseMessageFieldRefs:     base.ErrorsBaseMessageFieldRefs,
+				ErrorsBaseUsages:               base.ErrorsBaseUsages,
 			}
 		},
 	},
@@ -122,6 +122,16 @@ var modernizeSteps = []modernizeStep{
 		},
 		stepConfig: func(base Config) Config {
 			return Config{InterpolatedStrings: base.InterpolatedStrings}
+		},
+	},
+	{
+		name:      "interface_nil_eq",
+		commitMsg: "modernize: label interface == nil comparisons for review",
+		enabled: func(c Config) bool {
+			return c.InterfaceNilEqComments
+		},
+		stepConfig: func(base Config) Config {
+			return Config{InterfaceNilEqComments: base.InterfaceNilEqComments}
 		},
 	},
 	{
@@ -285,7 +295,7 @@ type passSummary struct {
 }
 
 func mergeChangedPaths(a, b []string) []string {
-	seen := make(map[string]struct{}, len(a)+len(b))
+	seen := make(map[string]struct{}, len(a) + len(b))
 	var out []string
 	for _, path := range append(a, b...) {
 		if _, ok := seen[path]; ok {
@@ -393,7 +403,7 @@ func gitModifiedFiles(vcsRoot string) ([]string, error) {
 		}
 		path := strings.TrimSpace(line[3:])
 		if idx := strings.Index(path, " -> "); idx >= 0 {
-			path = path[idx+4:]
+			path = path[idx + 4:]
 		}
 		paths = append(paths, filepath.Join(vcsRoot, path))
 	}

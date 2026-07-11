@@ -73,8 +73,8 @@ func insertNilablePointersDirective(content string) string {
 			continue
 		}
 		// go directive missing: insert before first require/replace/blank or at end of header.
-		if i+1 < len(lines) {
-			next := strings.TrimSpace(lines[i+1])
+		if i + 1 < len(lines) {
+			next := strings.TrimSpace(lines[i + 1])
 			if trim != "" && !strings.HasPrefix(trim, "module ") && !strings.HasPrefix(trim, "go 1.") &&
 				(strings.HasPrefix(next, "require") || next == "" || strings.HasPrefix(next, "replace")) {
 				out = append(out, "", "nilable_pointers enable")
@@ -83,7 +83,7 @@ func insertNilablePointersDirective(content string) string {
 		}
 	}
 	if !inserted {
-		if len(out) > 0 && out[len(out)-1] != "" {
+		if len(out) > 0 && out[len(out) - 1] != "" {
 			out = append(out, "")
 		}
 		out = append(out, "nilable_pointers enable")
@@ -133,7 +133,7 @@ func collapseBlankLineAfterOpeningBrace(src []byte) []byte {
 	var out []string
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
-		if strings.HasSuffix(strings.TrimSpace(line), "{") && i+2 < len(lines) && lines[i+1] == "" && isIndentedStmtLine(lines[i+2]) {
+		if strings.HasSuffix(strings.TrimSpace(line), "{") && i + 2 < len(lines) && lines[i + 1] == "" && isIndentedStmtLine(lines[i + 2]) {
 			out = append(out, line)
 			i++
 			continue

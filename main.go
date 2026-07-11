@@ -53,11 +53,11 @@ func main() {
 }
 
 func printSummary(summary passSummary) {
-	fmt.Fprintf(os.Stderr, "modernized %d files (%d nilable, %d verified *T, %d call()!, %d err!, %d fmt.Errorf→errors.New, %d custom errors, %d shorthand types, %d for-in loops, %d shorthand literals, %d spread calls, %d negative slices, %d interpolated strings, %d nil receiver guards removed, %d optional method chains)\n",
+	fmt.Fprintf(os.Stderr, "modernized %d files (%d nilable, %d verified *T, %d call()!, %d err!, %d fmt.Errorf→errors.New, %d custom errors, %d shorthand types, %d for-in loops, %d shorthand literals, %d spread calls, %d negative slices, %d interpolated strings, %d interface nil eq comments, %d nil receiver guards removed, %d optional method chains)\n",
 		summary.changedFiles, summary.counts.nilable, summary.counts.verifiedNonNil, summary.counts.callBang,
 		summary.counts.errBang, summary.counts.fmtErrorf, summary.counts.customErr, summary.counts.shorthand, summary.counts.forIn,
 		summary.counts.shorthandLit, summary.counts.spreadCall, summary.counts.negativeSlice,
-		summary.counts.interpolatedStrings,
+		summary.counts.interpolatedStrings, summary.counts.interfaceNilEq,
 		summary.counts.nilRecvGuards, summary.counts.optionalChains)
 }
 
@@ -190,20 +190,21 @@ func collectPackages(root string) ([]pkgFiles, error) {
 }
 
 type rewriteCounts struct {
-	callBang       int
-	errBang        int
-	nilable        int
-	verifiedNonNil int
-	fmtErrorf      int
-	customErr      int
-	shorthand      int
-	forIn          int
-	shorthandLit   int
-	spreadCall     int
-	negativeSlice  int
+	callBang            int
+	errBang             int
+	nilable             int
+	verifiedNonNil      int
+	fmtErrorf           int
+	customErr           int
+	shorthand           int
+	forIn               int
+	shorthandLit        int
+	spreadCall          int
+	negativeSlice       int
 	interpolatedStrings int
-	nilRecvGuards  int
-	optionalChains int
+	interfaceNilEq      int
+	nilRecvGuards       int
+	optionalChains      int
 }
 
 func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (changedPaths []string, counts rewriteCounts, err error) {
@@ -220,6 +221,7 @@ func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (change
 
 	nilableChanged := make([]bool, len(files))
 	nilRecvChanged := make([]bool, len(files))
+	ifaceNilChanged := make([]bool, len(files))
 	var verifiedNonNil int
 	if cfg.RemoveNilReceiverGuards || cfg.OptionalMethodChains {
 		for i, f := range files {
@@ -236,6 +238,31 @@ func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (change
 	}
 	pkgEmbed := collectPackageEmbedOnlyTypes(files)
 	pkgExtraFields := collectPackageHasExtraErrorTypes(files)
+
+	if cfg.InterfaceNilEqComments {
+		modRoot, _ := findModuleRoot(pkg.dir)
+		importPath := packageImportPath(modRoot, pkg.dir)
+		editsByFile := labelInterfaceNilComparisons(fset, files, importPath)
+		for fi, edits := range editsByFile {
+			if len(edits) == 0 {
+				continue
+			}
+			path := pkg.paths[fi]
+			src, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil, counts, readErr
+			}
+			src = applySourceEdits(src, edits)
+			f, e := parser.ParseFile(fset, path, src, parser.ParseComments)
+			if e != nil {
+				return nil, counts, e
+			}
+			f.NilablePointersRegions = buildNilablePointersRegions(collectNilablePointersDirectives(f))
+			files[fi] = f
+			counts.interfaceNilEq += len(edits)
+			ifaceNilChanged[fi] = true
+		}
+	}
 
 	for i, path := range pkg.paths {
 		literalChanged := false
@@ -290,7 +317,7 @@ func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (change
 				interpChanged = true
 			}
 		}
-		_, countsPart, fileChanged, e := modernizeParsedFile(fset, files, files[i], path, nilableChanged[i] || literalChanged || interpChanged || nilRecvChanged[i], pkgEmbed, pkgExtraFields, cfg, modIdx, true)
+		_, countsPart, fileChanged, e := modernizeParsedFile(fset, files, files[i], path, nilableChanged[i] || literalChanged || interpChanged || nilRecvChanged[i] || ifaceNilChanged[i], pkgEmbed, pkgExtraFields, cfg, modIdx, true)
 		if e != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", path, e)
 			continue
@@ -413,13 +440,13 @@ func modernizeFile(path string) (bool, int, error) {
 }
 
 type fileModernizer struct {
-	fset           *token.FileSet
-	file           *ast.File
-	pkgEmbed       map[string]string   // embed-only error type → removed message field (package scope)
-	pkgExtraFields map[string][]string // has-extra error type → domain field names (package scope)
-	cfg            Config
-	changed        bool
-	callBangCount  int
+	fset             *token.FileSet
+	file             *ast.File
+	pkgEmbed         map[string]string   // embed-only error type → removed message field (package scope)
+	pkgExtraFields   map[string][]string // has-extra error type → domain field names (package scope)
+	cfg              Config
+	changed          bool
+	callBangCount    int
 	errBangStmtCount int
 }
 
@@ -545,7 +572,7 @@ func (m *fileModernizer) removeUnusedErrVarInBody(body *ast.BlockStmt) {
 			continue
 		}
 		if len(gen.Specs) == 0 {
-			body.List = append(body.List[:i], body.List[i+1:]...)
+			body.List = append(body.List[:i], body.List[i + 1:]...)
 			i--
 		}
 		m.mark()
@@ -781,7 +808,7 @@ func (m *fileModernizer) matchStandaloneErrBang(stmt ast.Stmt, list []ast.Stmt, 
 	if !lastErrBindIsValid(list, i, errName) {
 		return nil, false
 	}
-	if stmtsBetweenTouchErr(list, lastErrBindBefore(list, i, errName)+1, i, errName) {
+	if stmtsBetweenTouchErr(list, lastErrBindBefore(list, i, errName) + 1, i, errName) {
 		return nil, false
 	}
 	return errBangStmt(errName), true
@@ -841,7 +868,7 @@ func lastErrBindIsValid(list []ast.Stmt, before int, name string) bool {
 	if len(assign.Lhs) < 3 {
 		return true
 	}
-	last, ok := assign.Lhs[len(assign.Lhs)-1].(*ast.Ident)
+	last, ok := assign.Lhs[len(assign.Lhs) - 1].(*ast.Ident)
 	return ok && last.Name == name
 }
 
@@ -868,10 +895,10 @@ func (m *fileModernizer) matchAssignReturnErrGapped(asg ast.Stmt, list []ast.Stm
 	errName := errLHS.Name
 	for j := i + 1; j < len(list); j++ {
 		if ifStmt, ok := list[j].(*ast.IfStmt); ok && isReturnErrIf(ifStmt, errName, vt) {
-			if j == i+1 {
+			if j == i + 1 {
 				return nil, 0, false
 			}
-			if stmtsBetweenTouchErr(list, i+1, j, errName) {
+			if stmtsBetweenTouchErr(list, i + 1, j, errName) {
 				return nil, 0, false
 			}
 			out := append([]ast.Stmt{}, list[i:j]...)
@@ -1092,10 +1119,10 @@ func (m *fileModernizer) matchAssignErrBang(asg ast.Stmt, list []ast.Stmt, i int
 	if !ok {
 		return nil, false
 	}
-	if i+1 >= len(list) {
+	if i + 1 >= len(list) {
 		return nil, false
 	}
-	exprStmt, ok := list[i+1].(*ast.ExprStmt)
+	exprStmt, ok := list[i + 1].(*ast.ExprStmt)
 	if !ok {
 		return nil, false
 	}
@@ -1107,7 +1134,7 @@ func (m *fileModernizer) matchAssignErrBang(asg ast.Stmt, list []ast.Stmt, i int
 	if !ok || id.Name != errLHS.Name {
 		return nil, false
 	}
-	if errUsedInStmts(list, i+2, errLHS.Name) {
+	if errUsedInStmts(list, i + 2, errLHS.Name) {
 		return nil, false
 	}
 	return bangStmtFromErrAssign(assign, call, errLHS, list, i, params)
@@ -1137,7 +1164,7 @@ func parseErrAssignCall(assign *ast.AssignStmt) (*ast.CallExpr, *ast.Ident, bool
 			return nil, nil, false
 		}
 	default:
-		last, ok := assign.Lhs[len(assign.Lhs)-1].(*ast.Ident)
+		last, ok := assign.Lhs[len(assign.Lhs) - 1].(*ast.Ident)
 		if !ok || last.Name != "err" {
 			return nil, nil, false
 		}
@@ -1164,15 +1191,15 @@ func (m *fileModernizer) matchAssignReturnErr(asg ast.Stmt, list []ast.Stmt, i i
 	if !ok {
 		return nil, false
 	}
-	if i+1 >= len(list) {
+	if i + 1 >= len(list) {
 		return nil, false
 	}
-	ifStmt, ok := list[i+1].(*ast.IfStmt)
+	ifStmt, ok := list[i + 1].(*ast.IfStmt)
 	if !ok || !isReturnErrIf(ifStmt, errLHS.Name, vt) {
 		return nil, false
 	}
 	errName := errLHS.Name
-	if errUsedInStmts(list, i+2, errName) {
+	if errUsedInStmts(list, i + 2, errName) {
 		return []ast.Stmt{assign, errBangStmt(errName)}, true
 	}
 	if stmt, ok := bangStmtFromErrAssign(assign, call, errLHS, list, i, params); ok {
@@ -1452,7 +1479,7 @@ func zeroMatches(z, vt ast.Expr) bool {
 			return true
 		}
 		if id, ok := vt.(*ast.Ident); ok {
-			return z.Name == id.Name+"{}"
+			return z.Name == id.Name + "{}"
 		}
 		return false
 	case *ast.CompositeLit:
@@ -1511,7 +1538,7 @@ func (m *fileModernizer) matchIfInitErr(stmt ast.Stmt, list []ast.Stmt, i int, v
 		if !ok || !isZeroReturn(ret, vt, errName) {
 			return nil, false
 		}
-		if errUsedInStmts(list, i+1, errName) {
+		if errUsedInStmts(list, i + 1, errName) {
 			return nil, false
 		}
 		return &ast.ExprStmt{X: bangExpr(call)}, true
@@ -1537,7 +1564,7 @@ func (m *fileModernizer) matchIfInitErr(stmt ast.Stmt, list []ast.Stmt, i int, v
 		if !ok || !isZeroReturn(ret, vt, errName) {
 			return nil, false
 		}
-		if errUsedInStmts(list, i+1, errName) {
+		if errUsedInStmts(list, i + 1, errName) {
 			return nil, false
 		}
 		if isBlank(valLHS) {
@@ -1608,10 +1635,10 @@ func (m *fileModernizer) matchAssignErrCheck(asg ast.Stmt, list []ast.Stmt, i in
 	if !ok {
 		return nil, false
 	}
-	if i+1 >= len(list) {
+	if i + 1 >= len(list) {
 		return nil, false
 	}
-	ifStmt, ok := list[i+1].(*ast.IfStmt)
+	ifStmt, ok := list[i + 1].(*ast.IfStmt)
 	if !ok || ifStmt.Init != nil || ifStmt.Else != nil {
 		return nil, false
 	}
@@ -1626,7 +1653,7 @@ func (m *fileModernizer) matchAssignErrCheck(asg ast.Stmt, list []ast.Stmt, i in
 	if !ok || !isZeroReturn(ret, vt, errName) {
 		return nil, false
 	}
-	if errUsedInStmts(list, i+2, errName) {
+	if errUsedInStmts(list, i + 2, errName) {
 		return nil, false
 	}
 	if isBlank(valLHS) {

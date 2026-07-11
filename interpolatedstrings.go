@@ -52,18 +52,18 @@ func rewriteSprintfToInterp(fset *token.FileSet, f *ast.File, src []byte, edits 
 			return true
 		}
 		verbs, stat, ok := parsePrintfFormat(format)
-		if !ok || len(verbs) != len(call.Args)-1 {
+		if !ok || len(verbs) != len(call.Args) - 1 {
 			return true
 		}
 		var segs []interpSegment
 		argIdx := 0
 		for _, part := range stat {
 			if part.verb {
-				if argIdx >= len(call.Args)-1 {
+				if argIdx >= len(call.Args) - 1 {
 					return true
 				}
 				segs = append(segs, interpSegment{
-					expr:   call.Args[argIdx+1],
+					expr:   call.Args[argIdx + 1],
 					format: printfVerbToInterp(verbs[argIdx]),
 				})
 				argIdx++
@@ -71,7 +71,7 @@ func rewriteSprintfToInterp(fset *token.FileSet, f *ast.File, src []byte, edits 
 			}
 			segs = append(segs, interpSegment{literal: part.text})
 		}
-		if argIdx != len(call.Args)-1 {
+		if argIdx != len(call.Args) - 1 {
 			return true
 		}
 		text, ok := renderInterpolatedString(fset, segs)
@@ -223,7 +223,7 @@ func isFmtIdent(x ast.Expr) bool {
 }
 
 func isDoubleQuoted(val string) bool {
-	return len(val) >= 2 && val[0] == '"' && val[len(val)-1] == '"'
+	return len(val) >= 2 && val[0] == '"' && val[len(val) - 1] == '"'
 }
 
 type printfPart struct {
@@ -243,7 +243,7 @@ func parsePrintfFormat(format string) (verbs []string, parts []printfPart, ok bo
 			i = j
 			continue
 		}
-		if i+1 < len(format) && format[i+1] == '%' {
+		if i + 1 < len(format) && format[i + 1] == '%' {
 			parts = append(parts, printfPart{text: "%"})
 			i += 2
 			continue
@@ -333,21 +333,21 @@ func escapeNonInterpBraces(quoted string) (string, bool) {
 	if !isDoubleQuoted(quoted) {
 		return quoted, false
 	}
-	body := quoted[1 : len(quoted)-1]
+	body := quoted[1 : len(quoted) - 1]
 	var out strings.Builder
 	out.WriteByte('"')
 	changed := false
 	for i := 0; i < len(body); i++ {
 		ch := body[i]
-		if ch == '\\' && i+1 < len(body) {
+		if ch == '\\' && i + 1 < len(body) {
 			out.WriteByte('\\')
-			out.WriteByte(body[i+1])
+			out.WriteByte(body[i + 1])
 			i++
 			continue
 		}
 		if ch == '{' {
 			if end, isHole := scanInterpHole(body, i); isHole {
-				out.WriteString(body[i : end+1])
+				out.WriteString(body[i : end + 1])
 				i = end
 				continue
 			}
@@ -370,12 +370,12 @@ func scanInterpHole(body string, start int) (end int, ok bool) {
 	if start >= len(body) || body[start] != '{' {
 		return 0, false
 	}
-	close := strings.IndexByte(body[start+1:], '}')
+	close := strings.IndexByte(body[start + 1:], '}')
 	if close < 0 {
 		return 0, false
 	}
 	end = start + 1 + close
-	inside := body[start+1 : end]
+	inside := body[start + 1 : end]
 	exprPart, _ := splitInterpInside(inside)
 	if strings.TrimSpace(exprPart) == "" {
 		return 0, false
@@ -391,5 +391,5 @@ func splitInterpInside(inside string) (expr, format string) {
 	if colon < 0 {
 		return strings.TrimSpace(inside), ""
 	}
-	return strings.TrimSpace(inside[:colon]), strings.TrimSpace(inside[colon+1:])
+	return strings.TrimSpace(inside[:colon]), strings.TrimSpace(inside[colon + 1:])
 }

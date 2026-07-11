@@ -98,7 +98,7 @@ func modernizeSpreadCalls(fset *token.FileSet, f *ast.File) (edits []sourceEdit,
 		if !ok || !call.Ellipsis.IsValid() || len(call.Args) == 0 {
 			return true
 		}
-		last := call.Args[len(call.Args)-1]
+		last := call.Args[len(call.Args) - 1]
 		start := fset.Position(last.Pos()).Offset
 		end := fset.Position(call.Ellipsis + token.Pos(len("..."))).Offset
 		var buf bytes.Buffer

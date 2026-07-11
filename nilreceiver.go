@@ -1071,9 +1071,9 @@ func maybeCoalesceStringFieldRead(sel *ast.SelectorExpr, returns *returnTypeInde
 		return 0
 	}
 	selParentReplace(root, sel, &ast.BinaryExpr{
-		X:    sel,
-		Op:   token.NULLCOALESCE,
-		Y:    &ast.BasicLit{Kind: token.STRING, Value: `""`},
+		X:  sel,
+		Op: token.NULLCOALESCE,
+		Y:  &ast.BasicLit{Kind: token.STRING, Value: `""`},
 	})
 	return 1
 }
@@ -1396,7 +1396,7 @@ func nilableMethodGuardFromAssign(fn *ast.FuncDecl, varIdx *funcVarIndex, return
 		}
 		if last > blockIdx {
 			skip = last - blockIdx
-			guard.Body.List = append(guard.Body.List, block[blockIdx+1:last+1]...)
+			guard.Body.List = append(guard.Body.List, block[blockIdx + 1:last + 1]...)
 		}
 	}
 	if id, ok := ast.Unparen(assign.Lhs[0]).(*ast.Ident); ok && assign.Tok == token.DEFINE && block != nil && identUsedLater(block, blockIdx, id.Name) && skip == 0 {
@@ -1813,9 +1813,9 @@ func coalesceOptionalFieldsInCompositeLits(f *ast.File, structs *structFieldInde
 				continue
 			}
 			kv.Value = &ast.BinaryExpr{
-				X:    kv.Value,
-				Op:   token.NULLCOALESCE,
-				Y:    &ast.BasicLit{Kind: token.STRING, Value: `""`},
+				X:  kv.Value,
+				Op: token.NULLCOALESCE,
+				Y:  &ast.BasicLit{Kind: token.STRING, Value: `""`},
 			}
 			count++
 		}
@@ -1978,9 +1978,9 @@ func coalesceOptionalLenArgs(f *ast.File, files []*ast.File, returns *returnType
 				return true
 			}
 			call.Args[0] = &ast.BinaryExpr{
-				X:    sel,
-				Op:   token.NULLCOALESCE,
-				Y:    zeroExprForType(ft),
+				X:  sel,
+				Op: token.NULLCOALESCE,
+				Y:  zeroExprForType(ft),
 			}
 			count++
 			return true
@@ -2013,9 +2013,9 @@ func coalesceOptionalBoolUnary(f *ast.File, files []*ast.File) int {
 				return true
 			}
 			u.X = &ast.BinaryExpr{
-				X:    sel,
-				Op:   token.NULLCOALESCE,
-				Y:    &ast.Ident{Name: "false"},
+				X:  sel,
+				Op: token.NULLCOALESCE,
+				Y:  &ast.Ident{Name: "false"},
 			}
 			count++
 			return true

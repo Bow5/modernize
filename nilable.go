@@ -90,7 +90,7 @@ func errLastResult(fields *ast.FieldList) bool {
 	if fields == nil || len(fields.List) == 0 {
 		return false
 	}
-	return isErrorType(fields.List[len(fields.List)-1].Type)
+	return isErrorType(fields.List[len(fields.List) - 1].Type)
 }
 
 func (a *ptrAnnotator) markLookupResults() {
@@ -1451,7 +1451,7 @@ func typesMatch(got, want string) bool {
 	if strings.TrimPrefix(got, "*") == want {
 		return true
 	}
-	if got == "*"+want {
+	if got == "*" + want {
 		return true
 	}
 	return false
@@ -1566,7 +1566,7 @@ func buildModuleNilableSliceFields(pkgs []pkgFiles) map[string]ast.Expr {
 			if !ok || arr.Len != nil {
 				continue
 			}
-			out[key.owner+"."+key.name] = ref
+			out[key.owner + "." + key.name] = ref
 		}
 	}
 	return out
@@ -1576,7 +1576,7 @@ func moduleNilableFieldBySuffix(field string) (ast.Expr, bool) {
 	var typ ast.Expr
 	var count int
 	for ref, t := range moduleNilableSliceFields {
-		if !strings.HasSuffix(ref, "."+field) {
+		if !strings.HasSuffix(ref, "." + field) {
 			continue
 		}
 		if count > 0 {
@@ -1600,14 +1600,14 @@ func (a *ptrAnnotator) appendNilableSliceCoalesceEdit(edits *[]sourceEdit, arg a
 				expr = e
 				break
 			}
-			if typ, ok = moduleNilableSliceFields[ownerType+"."+field]; ok {
+			if typ, ok = moduleNilableSliceFields[ownerType + "." + field]; ok {
 				expr = e
 				break
 			}
 		}
 		typeName := a.exprTypeName(e.X, curFunc)
 		var ok bool
-		typ, ok = moduleNilableSliceFields[typeName+"."+e.Sel.Name]
+		typ, ok = moduleNilableSliceFields[typeName + "." + e.Sel.Name]
 		if !ok {
 			typ, ok = moduleNilableFieldBySuffix(e.Sel.Name)
 		}
@@ -2344,7 +2344,7 @@ func splitNilOrReturnInBlock(body *ast.BlockStmt, changed *bool) bool {
 		}
 		ifs.Cond = op.Y
 		body.List[i] = nilIf
-		body.List = append(body.List[:i+1], append([]ast.Stmt{ifs}, body.List[i+1:]...)...)
+		body.List = append(body.List[:i + 1], append([]ast.Stmt{ifs}, body.List[i + 1:]...)...)
 		local = true
 		*changed = true
 		i++
@@ -2414,13 +2414,13 @@ func fixFindPassthroughReturns(fset *token.FileSet, f *ast.File, ann *ptrAnnotat
 				Lhs: []ast.Expr{&ast.Ident{Name: "_r"}},
 				Rhs: []ast.Expr{call},
 			}
-			fn.Body.List = append(fn.Body.List[:i+1], append([]ast.Stmt{
+			fn.Body.List = append(fn.Body.List[:i + 1], append([]ast.Stmt{
 				&ast.IfStmt{
 					Cond: &ast.BinaryExpr{X: &ast.Ident{Name: "_r"}, Op: token.NEQ, Y: &ast.Ident{Name: "nil"}},
 					Body: &ast.BlockStmt{List: []ast.Stmt{&ast.ReturnStmt{Results: []ast.Expr{&ast.Ident{Name: "_r"}}}}},
 				},
 				&ast.ReturnStmt{Results: []ast.Expr{&ast.Ident{Name: "nil"}}},
-			}, fn.Body.List[i+1:]...)...)
+			}, fn.Body.List[i + 1:]...)...)
 			ann.nilable[flat[0].key] = true
 			if newTyp, ok := rewriteTypeAt(fset, f, fn.Type.Results.List[0].Type, true); ok {
 				fn.Type.Results.List[0].Type = newTyp
