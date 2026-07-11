@@ -25,6 +25,7 @@ type Config struct {
 	ShorthandLiterals                bool `json:"shorthand_literals"`
 	SpreadCallSyntax                 bool `json:"spread_call_syntax"`
 	NegativeSliceIndices             bool `json:"negative_slice_indices"`
+	InterpolatedStrings              bool `json:"interpolated_strings"`
 	StepCommits                      bool `json:"step_commits"`
 	RemoveNilReceiverGuards          bool `json:"remove_nil_receiver_guards"`
 	OptionalMethodChains             bool `json:"optional_method_chains"`
@@ -48,6 +49,7 @@ func DefaultConfig() Config {
 		ShorthandLiterals:                true,
 		SpreadCallSyntax:                 true,
 		NegativeSliceIndices:             true,
+		InterpolatedStrings:              true,
 		StepCommits:                      true,
 		RemoveNilReceiverGuards:          true,
 		OptionalMethodChains:             true,

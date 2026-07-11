@@ -53,10 +53,11 @@ func main() {
 }
 
 func printSummary(summary passSummary) {
-	fmt.Fprintf(os.Stderr, "modernized %d files (%d nilable, %d verified *T, %d call()!, %d err!, %d fmt.Errorf→errors.New, %d custom errors, %d shorthand types, %d for-in loops, %d shorthand literals, %d spread calls, %d negative slices, %d nil receiver guards removed, %d optional method chains)\n",
+	fmt.Fprintf(os.Stderr, "modernized %d files (%d nilable, %d verified *T, %d call()!, %d err!, %d fmt.Errorf→errors.New, %d custom errors, %d shorthand types, %d for-in loops, %d shorthand literals, %d spread calls, %d negative slices, %d interpolated strings, %d nil receiver guards removed, %d optional method chains)\n",
 		summary.changedFiles, summary.counts.nilable, summary.counts.verifiedNonNil, summary.counts.callBang,
 		summary.counts.errBang, summary.counts.fmtErrorf, summary.counts.customErr, summary.counts.shorthand, summary.counts.forIn,
 		summary.counts.shorthandLit, summary.counts.spreadCall, summary.counts.negativeSlice,
+		summary.counts.interpolatedStrings,
 		summary.counts.nilRecvGuards, summary.counts.optionalChains)
 }
 
@@ -123,6 +124,7 @@ func runModernize(absRoot string, cfg Config) (passSummary, error) {
 		summary.counts.shorthandLit += n.shorthandLit
 		summary.counts.spreadCall += n.spreadCall
 		summary.counts.negativeSlice += n.negativeSlice
+		summary.counts.interpolatedStrings += n.interpolatedStrings
 		summary.counts.nilRecvGuards += n.nilRecvGuards
 		summary.counts.optionalChains += n.optionalChains
 	}
@@ -199,6 +201,7 @@ type rewriteCounts struct {
 	shorthandLit   int
 	spreadCall     int
 	negativeSlice  int
+	interpolatedStrings int
 	nilRecvGuards  int
 	optionalChains int
 }
@@ -236,6 +239,7 @@ func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (change
 
 	for i, path := range pkg.paths {
 		literalChanged := false
+		interpChanged := false
 		if cfg.ShorthandLiterals || cfg.SpreadCallSyntax || cfg.NegativeSliceIndices {
 			src, readErr := os.ReadFile(path)
 			if readErr != nil {
@@ -268,7 +272,25 @@ func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (change
 				literalChanged = true
 			}
 		}
-		_, countsPart, fileChanged, e := modernizeParsedFile(fset, files, files[i], path, nilableChanged[i] || literalChanged || nilRecvChanged[i], pkgEmbed, pkgExtraFields, cfg, modIdx, true)
+		if cfg.InterpolatedStrings {
+			src, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil, counts, readErr
+			}
+			edits, n := modernizeInterpolatedStrings(fset, files[i], src)
+			counts.interpolatedStrings += n
+			if len(edits) > 0 {
+				src = applySourceEdits(src, edits)
+				f, e := parser.ParseFile(fset, path, src, parser.ParseComments)
+				if e != nil {
+					return nil, counts, e
+				}
+				f.NilablePointersRegions = buildNilablePointersRegions(collectNilablePointersDirectives(f))
+				files[i] = f
+				interpChanged = true
+			}
+		}
+		_, countsPart, fileChanged, e := modernizeParsedFile(fset, files, files[i], path, nilableChanged[i] || literalChanged || interpChanged || nilRecvChanged[i], pkgEmbed, pkgExtraFields, cfg, modIdx, true)
 		if e != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", path, e)
 			continue

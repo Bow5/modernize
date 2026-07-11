@@ -127,5 +127,6 @@ Disable step commits to restore the previous single-pass behavior:
 
 - [examples.md](examples.md) — before/after for each pass
 - [shorthand_literals.md](shorthand_literals.md) — when slice/map/set literals are rewritten
+- [interpolated_strings.md](interpolated_strings.md) — interpolated string syntax and modernizer pass
 - [../modernize.json](../modernize.json) — canonical template in the repo
 - [../README.md](../README.md) — usage and requirements

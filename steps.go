@@ -115,6 +115,16 @@ var modernizeSteps = []modernizeStep{
 		},
 	},
 	{
+		name:      "interpolated_strings",
+		commitMsg: "modernize: interpolated string syntax",
+		enabled: func(c Config) bool {
+			return c.InterpolatedStrings
+		},
+		stepConfig: func(base Config) Config {
+			return Config{InterpolatedStrings: base.InterpolatedStrings}
+		},
+	},
+	{
 		name:      "shorthand_types",
 		commitMsg: "modernize: struct and interface shorthand",
 		enabled: func(c Config) bool {
