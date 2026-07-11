@@ -53,9 +53,9 @@ func main() {
 }
 
 func printSummary(summary passSummary) {
-	fmt.Fprintf(os.Stderr, "modernized %d files (%d nilable, %d verified *T, %d call()!, %d err!, %d fmt.Errorf→errors.New, %d custom errors, %d shorthand types, %d nil receiver guards removed, %d optional method chains)\n",
+	fmt.Fprintf(os.Stderr, "modernized %d files (%d nilable, %d verified *T, %d call()!, %d err!, %d fmt.Errorf→errors.New, %d custom errors, %d shorthand types, %d for-in loops, %d nil receiver guards removed, %d optional method chains)\n",
 		summary.changedFiles, summary.counts.nilable, summary.counts.verifiedNonNil, summary.counts.callBang,
-		summary.counts.errBang, summary.counts.fmtErrorf, summary.counts.customErr, summary.counts.shorthand,
+		summary.counts.errBang, summary.counts.fmtErrorf, summary.counts.customErr, summary.counts.shorthand, summary.counts.forIn,
 		summary.counts.nilRecvGuards, summary.counts.optionalChains)
 }
 
@@ -158,6 +158,7 @@ type rewriteCounts struct {
 	fmtErrorf      int
 	customErr      int
 	shorthand      int
+	forIn          int
 	nilRecvGuards  int
 	optionalChains int
 }
@@ -197,6 +198,7 @@ func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (change
 		counts.fmtErrorf += countsPart.fmtErrorf
 		counts.customErr += countsPart.customErr
 		counts.shorthand += countsPart.shorthand
+		counts.forIn += countsPart.forIn
 		counts.nilRecvGuards += countsPart.nilRecvGuards
 		counts.optionalChains += countsPart.optionalChains
 		if nilableChanged[i] && fileChanged {
@@ -238,6 +240,9 @@ func modernizeParsedFile(fset *token.FileSet, pkgFiles []*ast.File, f *ast.File,
 	}
 	if cfg.ShorthandTypes {
 		counts.shorthand = mod.modernizeShorthandTypes()
+	}
+	if cfg.ForInSyntax {
+		counts.forIn = mod.modernizeForIn()
 	}
 	if cfg.RemoveNilReceiverGuards || cfg.OptionalMethodChains {
 		guards, chains := modernizeNilReceivers(f, pkgFiles, cfg, modIdx)
@@ -281,6 +286,14 @@ type fileModernizer struct {
 	changed        bool
 	callBangCount  int
 	errBangStmtCount int
+}
+
+func (m *fileModernizer) modernizeForIn() int {
+	n := modernizeForIn(m.file)
+	if n > 0 {
+		m.mark()
+	}
+	return n
 }
 
 func (m *fileModernizer) modernizeShorthandTypes() int {

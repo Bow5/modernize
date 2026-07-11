@@ -89,6 +89,16 @@ var modernizeSteps = []modernizeStep{
 		},
 	},
 	{
+		name:      "for_in_syntax",
+		commitMsg: "modernize: for-in loop syntax",
+		enabled: func(c Config) bool {
+			return c.ForInSyntax
+		},
+		stepConfig: func(base Config) Config {
+			return Config{ForInSyntax: base.ForInSyntax}
+		},
+	},
+	{
 		name:      "shorthand_types",
 		commitMsg: "modernize: struct and interface shorthand",
 		enabled: func(c Config) bool {

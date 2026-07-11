@@ -21,6 +21,7 @@ type Config struct {
 	ErrorsBaseMessageFieldRefs       bool `json:"errors_base_message_field_refs"`
 	ErrorsBaseUsages                 bool `json:"errors_base_usages"`
 	ShorthandTypes                   bool `json:"shorthand_types"`
+	ForInSyntax                      bool `json:"for_in_syntax"`
 	StepCommits                      bool `json:"step_commits"`
 	RemoveNilReceiverGuards          bool `json:"remove_nil_receiver_guards"`
 	OptionalMethodChains             bool `json:"optional_method_chains"`
@@ -40,6 +41,7 @@ func DefaultConfig() Config {
 		ErrorsBaseMessageFieldRefs:       true,
 		ErrorsBaseUsages:                 true,
 		ShorthandTypes:                   true,
+		ForInSyntax:                      true,
 		StepCommits:                      true,
 		RemoveNilReceiverGuards:          true,
 		OptionalMethodChains:             true,

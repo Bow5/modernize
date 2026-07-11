@@ -54,7 +54,7 @@ func TestFindVCSRootGit(t *testing.T) {
 }
 
 func TestModernizeStepOrder(t *testing.T) {
-	want := []string{"formatting", "nilable_pointers", "nil_receivers", "err_bang", "structured_errors", "shorthand_types"}
+	want := []string{"formatting", "nilable_pointers", "nil_receivers", "err_bang", "structured_errors", "for_in_syntax", "shorthand_types"}
 	if len(modernizeSteps) != len(want) {
 		t.Fatalf("got %d steps, want %d", len(modernizeSteps), len(want))
 	}
