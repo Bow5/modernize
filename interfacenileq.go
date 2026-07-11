@@ -1,7 +1,3 @@
-// Copyright (c) 2026 The modernize Authors
-//
-// SPDX-License-Identifier: MIT
-
 package main
 
 import (
