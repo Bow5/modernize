@@ -53,7 +53,7 @@ func main() {
 }
 
 func printSummary(summary passSummary) {
-	fmt.Fprintf(os.Stderr, "modernized %d files (%d nilable, %d verified *T, %d call()!, %d err!, %d fmt.Errorf→errors.New, %d custom errors, %d shorthand types, %d for-in loops, %d shorthand literals, %d spread calls, %d nil receiver guards removed, %d optional method chains)\n",
+	fmt.Fprintf(os.Stderr, "modernized %d files (%d nilable, %d verified *T, %d call()!, %d err!, %d fmt.Errorf→errors.New, %d custom errors, %d shorthand types, %d for-in loops, %d shorthand literals, %d spread calls, %d negative slices, %d nil receiver guards removed, %d optional method chains)\n",
 		summary.changedFiles, summary.counts.nilable, summary.counts.verifiedNonNil, summary.counts.callBang,
 		summary.counts.errBang, summary.counts.fmtErrorf, summary.counts.customErr, summary.counts.shorthand, summary.counts.forIn,
 		summary.counts.shorthandLit, summary.counts.spreadCall, summary.counts.negativeSlice,
@@ -184,7 +184,18 @@ func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (change
 	}
 
 	nilableChanged := make([]bool, len(files))
+	nilRecvChanged := make([]bool, len(files))
 	var verifiedNonNil int
+	if cfg.RemoveNilReceiverGuards || cfg.OptionalMethodChains {
+		for i, f := range files {
+			guards, chains := modernizeNilReceivers(f, files, cfg, modIdx)
+			counts.nilRecvGuards += guards
+			counts.optionalChains += chains
+			if guards > 0 || chains > 0 {
+				nilRecvChanged[i] = true
+			}
+		}
+	}
 	if cfg.NilablePointersAnnotate {
 		nilableChanged, verifiedNonNil = applyPtrAnnotations(fset, files)
 	}
@@ -225,7 +236,7 @@ func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (change
 				literalChanged = true
 			}
 		}
-		_, countsPart, fileChanged, e := modernizeParsedFile(fset, files, files[i], path, nilableChanged[i] || literalChanged, pkgEmbed, pkgExtraFields, cfg, modIdx)
+		_, countsPart, fileChanged, e := modernizeParsedFile(fset, files, files[i], path, nilableChanged[i] || literalChanged || nilRecvChanged[i], pkgEmbed, pkgExtraFields, cfg, modIdx, true)
 		if e != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", path, e)
 			continue
@@ -240,8 +251,6 @@ func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (change
 		counts.customErr += countsPart.customErr
 		counts.shorthand += countsPart.shorthand
 		counts.forIn += countsPart.forIn
-		counts.nilRecvGuards += countsPart.nilRecvGuards
-		counts.optionalChains += countsPart.optionalChains
 		if nilableChanged[i] && fileChanged {
 			counts.nilable++
 		}
@@ -250,7 +259,7 @@ func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (change
 	return changedPaths, counts, nil
 }
 
-func modernizeParsedFile(fset *token.FileSet, pkgFiles []*ast.File, f *ast.File, path string, forceWrite bool, pkgEmbed map[string]string, pkgExtraFields map[string][]string, cfg Config, modIdx *moduleFuncIndex) (nilableChanged bool, counts rewriteCounts, changed bool, err error) {
+func modernizeParsedFile(fset *token.FileSet, pkgFiles []*ast.File, f *ast.File, path string, forceWrite bool, pkgEmbed map[string]string, pkgExtraFields map[string][]string, cfg Config, modIdx *moduleFuncIndex, nilReceiversDone bool) (nilableChanged bool, counts rewriteCounts, changed bool, err error) {
 	mod := &fileModernizer{fset: fset, file: f, pkgEmbed: pkgEmbed, pkgExtraFields: pkgExtraFields, cfg: cfg}
 
 	if cfg.ErrBangSignatures {
@@ -285,7 +294,7 @@ func modernizeParsedFile(fset *token.FileSet, pkgFiles []*ast.File, f *ast.File,
 	if cfg.ForInSyntax {
 		counts.forIn = mod.modernizeForIn()
 	}
-	if cfg.RemoveNilReceiverGuards || cfg.OptionalMethodChains {
+	if !nilReceiversDone && (cfg.RemoveNilReceiverGuards || cfg.OptionalMethodChains) {
 		guards, chains := modernizeNilReceivers(f, pkgFiles, cfg, modIdx)
 		counts.nilRecvGuards = guards
 		counts.optionalChains = chains
@@ -313,8 +322,12 @@ func modernizeFile(path string) (bool, int, error) {
 		return false, 0, err
 	}
 	f.NilablePointersRegions = buildNilablePointersRegions(collectNilablePointersDirectives(f))
+	cfg := DefaultConfig()
+	if cfg.RemoveNilReceiverGuards || cfg.OptionalMethodChains {
+		modernizeNilReceivers(f, []*ast.File{f}, cfg, nil)
+	}
 	changedFlags, _ := applyPtrAnnotations(fset, []*ast.File{f})
-	_, countsPart, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, path, changedFlags[0], nil, nil, DefaultConfig(), nil)
+	_, countsPart, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, path, changedFlags[0], nil, nil, cfg, nil, true)
 	return changed, countsPart.callBang + countsPart.errBang, err
 }
 

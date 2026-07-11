@@ -23,7 +23,7 @@ type modernizeStep struct {
 }
 
 // modernizeSteps follows go/README.md migration order (formatting first, then
-// nilable pointers, T!/!, structured errors, struct/interface shorthand).
+// nil receivers, nilable pointers, T!/!, structured errors, struct/interface shorthand).
 var modernizeSteps = []modernizeStep{
 	{
 		name:      "formatting",
@@ -31,6 +31,19 @@ var modernizeSteps = []modernizeStep{
 		enabled:   func(Config) bool { return true },
 		stepConfig: func(base Config) Config {
 			return base
+		},
+	},
+	{
+		name:      "nil_receivers",
+		commitMsg: "modernize: remove nil-receiver guards and optional ?. chains",
+		enabled: func(c Config) bool {
+			return c.RemoveNilReceiverGuards || c.OptionalMethodChains
+		},
+		stepConfig: func(base Config) Config {
+			return Config{
+				RemoveNilReceiverGuards: base.RemoveNilReceiverGuards,
+				OptionalMethodChains:    base.OptionalMethodChains,
+			}
 		},
 	},
 	{
@@ -44,19 +57,6 @@ var modernizeSteps = []modernizeStep{
 				NilablePointersGoMod:      base.NilablePointersGoMod,
 				NilablePointersGenDisable: base.NilablePointersGenDisable,
 				NilablePointersAnnotate:   base.NilablePointersAnnotate,
-			}
-		},
-	},
-	{
-		name:      "nil_receivers",
-		commitMsg: "modernize: remove nil-receiver guards and optional ?. chains",
-		enabled: func(c Config) bool {
-			return c.RemoveNilReceiverGuards || c.OptionalMethodChains
-		},
-		stepConfig: func(base Config) Config {
-			return Config{
-				RemoveNilReceiverGuards: base.RemoveNilReceiverGuards,
-				OptionalMethodChains:    base.OptionalMethodChains,
 			}
 		},
 	},
