@@ -409,8 +409,8 @@ func modernizeNilReceivers(f *ast.File, files []*ast.File, cfg Config, modIdx *m
 	if cfg.OptionalMethodChains {
 		chains = optionalMethodChains(f, files, guardIdx)
 		chains += nilablePointerChains(f, files, returns, modIdx)
-		// nilableMethodGuards inserts broken guard trees on some complex functions (e.g. data-usage-cache).
-		// chains += nilableMethodGuards(f, files, returns, modIdx)
+		// Do not wrap nilable pointer method calls in if _root != nil guards.
+		// Leave reqInfo.SetTags(...) as-is; compile errors under nilable_pointers are for manual review.
 		chains += coalesceOptionalStringFieldReads(f, files, returns, modIdx)
 		chains += coalesceOptionalLenArgs(f, files, returns, modIdx)
 		chains += coalesceOptionalBoolUnary(f, files)
@@ -1135,17 +1135,8 @@ func processNilableSelector(sel *ast.SelectorExpr, returns *returnTypeIndex, mod
 }
 
 func nilableMethodGuards(f *ast.File, files []*ast.File, returns *returnTypeIndex, modIdx *moduleFuncIndex) int {
-	varIdx := buildFuncVarIndex(files, returns, modIdx)
-	count := 0
-	for _, decl := range f.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Body == nil {
-			continue
-		}
-		fn.Body.List, count = rewriteNilableMethodStmts(fn, varIdx, returns, modIdx, f, fn.Body.List, map[string]bool{}, false, count)
-		count += rewriteFuncLitBodies(fn, varIdx, returns, modIdx, f, fn.Body.List, map[string]bool{}, 0)
-	}
-	return count
+	// Disabled: do not insert if _root != nil guards around nilable method calls.
+	return 0
 }
 
 func rewriteNilableMethodStmts(fn *ast.FuncDecl, varIdx *funcVarIndex, returns *returnTypeIndex, modIdx *moduleFuncIndex, f *ast.File, stmts []ast.Stmt, narrowed map[string]bool, inLoop bool, count int) ([]ast.Stmt, int) {

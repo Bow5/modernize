@@ -64,7 +64,7 @@ To disable only `errors.Base` embedding:
 | `shorthand_types` | `true` | Rewrite `type T struct` / `type I interface` to `struct T` / `interface I` |
 | `step_commits` | `true` | When the target is in a git or hg repo, run each pass separately and commit its changes (formatting first, then nil receivers, nilable pointers, `T!` / `!`, structured errors, shorthand) |
 | `remove_nil_receiver_guards` | `true` | Remove `if recv == nil { return … }` guards in pointer-receiver methods (unreachable in Bow — [nil receivers](../../go/doc/new_features/nil_receivers.md)) |
-| `optional_method_chains` | `true` | Add `?.` only where a method had `if recv == nil { return nil / zero }` — behaviorally equivalent to the old guard |
+| `optional_method_chains` | `true` | Add `?.` for nilable field reads and for methods that previously had `if recv == nil { return nil / zero }` guards. Does **not** insert `if recv != nil` wrappers around nilable method calls — leave `reqInfo.SetTags(...)` as-is. |
 
 ## Step commits
 
@@ -126,5 +126,6 @@ Disable step commits to restore the previous single-pass behavior:
 ## Related docs
 
 - [examples.md](examples.md) — before/after for each pass
+- [shorthand_literals.md](shorthand_literals.md) — when slice/map/set literals are rewritten
 - [../modernize.json](../modernize.json) — canonical template in the repo
 - [../README.md](../README.md) — usage and requirements

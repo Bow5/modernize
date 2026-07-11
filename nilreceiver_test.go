@@ -222,8 +222,8 @@ func Use() {
 	if n := nilablePointerChains(f, files, returns, nil); n != 0 {
 		t.Fatalf("nilablePointerChains rewrote %d, want 0 for method calls", n)
 	}
-	if n := nilableMethodGuards(f, files, returns, nil); n != 1 {
-		t.Fatalf("nilableMethodGuards rewrote %d, want 1", n)
+	if n := nilableMethodGuards(f, files, returns, nil); n != 0 {
+		t.Fatalf("nilableMethodGuards rewrote %d, want 0 (guards disabled)", n)
 	}
 }
 
@@ -252,8 +252,8 @@ func (sys *Sys) beat() {
 
 	files := []*ast.File{f}
 	returns := buildReturnTypeIndex(files)
-	if n := nilableMethodGuards(f, files, returns, nil); n != 1 {
-		t.Fatalf("nilableMethodGuards rewrote %d, want 1 for range", n)
+	if n := nilableMethodGuards(f, files, returns, nil); n != 0 {
+		t.Fatalf("nilableMethodGuards rewrote %d, want 0 for range (guards disabled)", n)
 	}
 }
 
@@ -472,8 +472,8 @@ func work(tgt *Target) {
 		t.Fatal("expected nilable tgt param")
 	}
 	// Outer nil check must not suppress guards inside the func lit.
-	if n := nilableMethodGuards(f, files, returns, nil); n < 1 {
-		t.Fatalf("nilableMethodGuards rewrote %d, want at least 1 in func lit", n)
+	if n := nilableMethodGuards(f, files, returns, nil); n != 0 {
+		t.Fatalf("nilableMethodGuards rewrote %d, want 0 in func lit (guards disabled)", n)
 	}
 }
 
@@ -500,15 +500,14 @@ func (sys *Sys) beat(eps []int) {
 
 	files := []*ast.File{f}
 	returns := buildReturnTypeIndex(files)
-	if n := nilableMethodGuards(f, files, returns, nil); n != 1 {
-		t.Fatalf("nilableMethodGuards rewrote %d, want 1", n)
+	if n := nilableMethodGuards(f, files, returns, nil); n != 0 {
+		t.Fatalf("nilableMethodGuards rewrote %d, want 0 (guards disabled)", n)
 	}
 	fn := f.Decls[3].(*ast.FuncDecl)
-	ifStmt := fn.Body.List[0].(*ast.IfStmt)
-	rangeStmt := ifStmt.Body.List[0].(*ast.RangeStmt)
+	rangeStmt := fn.Body.List[0].(*ast.RangeStmt)
 	call := rangeStmt.X.(*ast.CallExpr)
 	if call.Ellipsis == 0 {
-		t.Fatal("expected variadic ellipsis preserved in range guard")
+		t.Fatal("expected variadic ellipsis preserved")
 	}
 }
 
@@ -559,7 +558,7 @@ func (c *Cache) scan() {
 
 	files := []*ast.File{f}
 	returns := buildReturnTypeIndex(files)
-	if n := nilableMethodGuards(f, files, returns, nil); n != 1 {
-		t.Fatalf("nilableMethodGuards star deref rewrote %d, want 1", n)
+	if n := nilableMethodGuards(f, files, returns, nil); n != 0 {
+		t.Fatalf("nilableMethodGuards star deref rewrote %d, want 0 (guards disabled)", n)
 	}
 }
