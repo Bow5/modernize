@@ -53,9 +53,10 @@ func main() {
 }
 
 func printSummary(summary passSummary) {
-	fmt.Fprintf(os.Stderr, "modernized %d files (%d nilable, %d verified *T, %d call()!, %d err!, %d fmt.Errorf→errors.New, %d custom errors, %d shorthand types, %d for-in loops, %d nil receiver guards removed, %d optional method chains)\n",
+	fmt.Fprintf(os.Stderr, "modernized %d files (%d nilable, %d verified *T, %d call()!, %d err!, %d fmt.Errorf→errors.New, %d custom errors, %d shorthand types, %d for-in loops, %d shorthand literals, %d spread calls, %d nil receiver guards removed, %d optional method chains)\n",
 		summary.changedFiles, summary.counts.nilable, summary.counts.verifiedNonNil, summary.counts.callBang,
 		summary.counts.errBang, summary.counts.fmtErrorf, summary.counts.customErr, summary.counts.shorthand, summary.counts.forIn,
+		summary.counts.shorthandLit, summary.counts.spreadCall,
 		summary.counts.nilRecvGuards, summary.counts.optionalChains)
 }
 
@@ -108,6 +109,9 @@ func runModernize(absRoot string, cfg Config) (passSummary, error) {
 		summary.counts.fmtErrorf += n.fmtErrorf
 		summary.counts.customErr += n.customErr
 		summary.counts.shorthand += n.shorthand
+		summary.counts.forIn += n.forIn
+		summary.counts.shorthandLit += n.shorthandLit
+		summary.counts.spreadCall += n.spreadCall
 		summary.counts.nilRecvGuards += n.nilRecvGuards
 		summary.counts.optionalChains += n.optionalChains
 	}
@@ -159,6 +163,8 @@ type rewriteCounts struct {
 	customErr      int
 	shorthand      int
 	forIn          int
+	shorthandLit   int
+	spreadCall     int
 	nilRecvGuards  int
 	optionalChains int
 }
@@ -184,7 +190,35 @@ func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (change
 	pkgExtraFields := collectPackageHasExtraErrorTypes(files)
 
 	for i, path := range pkg.paths {
-		_, countsPart, fileChanged, e := modernizeParsedFile(fset, files, files[i], path, nilableChanged[i], pkgEmbed, pkgExtraFields, cfg, modIdx)
+		literalChanged := false
+		if cfg.ShorthandLiterals || cfg.SpreadCallSyntax {
+			src, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil, counts, readErr
+			}
+			var edits []sourceEdit
+			if cfg.ShorthandLiterals {
+				e, n := modernizeShorthandLiterals(fset, files[i], src)
+				edits = append(edits, e...)
+				counts.shorthandLit += n
+			}
+			if cfg.SpreadCallSyntax {
+				e, n := modernizeSpreadCalls(fset, files[i])
+				edits = append(edits, e...)
+				counts.spreadCall += n
+			}
+			if len(edits) > 0 {
+				src = applySourceEdits(src, edits)
+				f, e := parser.ParseFile(fset, path, src, parser.ParseComments)
+				if e != nil {
+					return nil, counts, e
+				}
+				f.NilablePointersRegions = buildNilablePointersRegions(collectNilablePointersDirectives(f))
+				files[i] = f
+				literalChanged = true
+			}
+		}
+		_, countsPart, fileChanged, e := modernizeParsedFile(fset, files, files[i], path, nilableChanged[i] || literalChanged, pkgEmbed, pkgExtraFields, cfg, modIdx)
 		if e != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", path, e)
 			continue

@@ -11,6 +11,9 @@
   "errors_base_message_field_refs": true,
   "errors_base_usages": true,
   "shorthand_types": true,
+  "for_in_syntax": true,
+  "shorthand_literals": true,
+  "spread_call_syntax": true,
   "step_commits": true,
   "remove_nil_receiver_guards": true,
   "optional_method_chains": true

@@ -99,6 +99,26 @@ var modernizeSteps = []modernizeStep{
 		},
 	},
 	{
+		name:      "shorthand_literals",
+		commitMsg: "modernize: array, map, and set literal syntax",
+		enabled: func(c Config) bool {
+			return c.ShorthandLiterals
+		},
+		stepConfig: func(base Config) Config {
+			return Config{ShorthandLiterals: base.ShorthandLiterals}
+		},
+	},
+	{
+		name:      "spread_call_syntax",
+		commitMsg: "modernize: prefix spread in variadic calls",
+		enabled: func(c Config) bool {
+			return c.SpreadCallSyntax
+		},
+		stepConfig: func(base Config) Config {
+			return Config{SpreadCallSyntax: base.SpreadCallSyntax}
+		},
+	},
+	{
 		name:      "shorthand_types",
 		commitMsg: "modernize: struct and interface shorthand",
 		enabled: func(c Config) bool {
