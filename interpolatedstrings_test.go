@@ -36,7 +36,7 @@ func f(n int) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	edits, n := rewriteSprintfToInterp(fset, f, []byte(src), nil)
+	edits, n := rewriteSprintfToInterp(fset, f, []byte(src), nil, nil)
 	if n != 1 {
 		t.Fatalf("rewrote %d, want 1", n)
 	}
@@ -94,7 +94,7 @@ func f(name string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	edits, n := rewriteFormatFuncsToNonF(fset, f, []byte(src), nil)
+	edits, n := rewriteFormatFuncsToNonF(fset, f, []byte(src), nil, nil)
 	if n != 1 {
 		t.Fatalf("rewrote %d, want 1", n)
 	}

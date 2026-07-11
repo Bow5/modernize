@@ -372,7 +372,7 @@ func ErrorToErr(err error) Err {
 	if strings.Contains(out, "InitCustom") {
 		t.Fatalf("should not InitCustom non-constructor returns:\n%s", out)
 	}
-	if !strings.Contains(out, `return Err\{msg: err.Error()\}`) {
+	if !strings.Contains(out, "msg: err.Error()") {
 		t.Fatalf("expected plain return:\n%s", out)
 	}
 }

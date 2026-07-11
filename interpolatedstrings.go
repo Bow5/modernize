@@ -19,9 +19,10 @@ type interpSegment struct {
 
 func modernizeInterpolatedStrings(fset *token.FileSet, f *ast.File, src []byte) (edits []sourceEdit, count int) {
 	// Order: Sprintf → *f funcs → errors.New → concat → escape literal braces.
-	edits, n := rewriteSprintfToInterp(fset, f, src, edits)
+	byteSliceArgs := byteSliceWrappedCalls(f)
+	edits, n := rewriteSprintfToInterp(fset, f, src, edits, byteSliceArgs)
 	count += n
-	edits, n = rewriteFormatFuncsToNonF(fset, f, src, edits)
+	edits, n = rewriteFormatFuncsToNonF(fset, f, src, edits, byteSliceArgs)
 	count += n
 	edits, n = rewriteErrorsNewToInterp(fset, f, src, edits)
 	count += n
@@ -32,12 +33,12 @@ func modernizeInterpolatedStrings(fset *token.FileSet, f *ast.File, src []byte) 
 	return edits, count
 }
 
-func rewriteSprintfToInterp(fset *token.FileSet, f *ast.File, src []byte, edits []sourceEdit) ([]sourceEdit, int) {
+func rewriteSprintfToInterp(fset *token.FileSet, f *ast.File, src []byte, edits []sourceEdit, byteSliceArgs map[*ast.CallExpr]bool) ([]sourceEdit, int) {
 	skip := byteSliceStringLits(f)
 	count := 0
 	ast.Inspect(f, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
-		if !ok || len(call.Args) == 0 {
+		if !ok || len(call.Args) == 0 || byteSliceArgs[call] {
 			return true
 		}
 		sel, ok := call.Fun.(*ast.SelectorExpr)
@@ -91,12 +92,12 @@ func rewriteSprintfToInterp(fset *token.FileSet, f *ast.File, src []byte, edits 
 	return edits, count
 }
 
-func rewriteFormatFuncsToNonF(fset *token.FileSet, f *ast.File, src []byte, edits []sourceEdit) ([]sourceEdit, int) {
+func rewriteFormatFuncsToNonF(fset *token.FileSet, f *ast.File, src []byte, edits []sourceEdit, byteSliceArgs map[*ast.CallExpr]bool) ([]sourceEdit, int) {
 	skip := byteSliceStringLits(f)
 	count := 0
 	ast.Inspect(f, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
-		if !ok || len(call.Args) == 0 {
+		if !ok || len(call.Args) == 0 || byteSliceArgs[call] {
 			return true
 		}
 		sel, ok := call.Fun.(*ast.SelectorExpr)
@@ -275,6 +276,83 @@ func byteSliceStringLits(f *ast.File) map[*ast.BasicLit]bool {
 	return skip
 }
 
+func byteSliceWrappedCalls(f *ast.File) map[*ast.CallExpr]bool {
+	wrapped := map[*ast.CallExpr]bool{}
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || !isByteSliceCast(call) {
+			return true
+		}
+		for _, arg := range call.Args {
+			if inner, ok := arg.(*ast.CallExpr); ok {
+				wrapped[inner] = true
+			}
+		}
+		return true
+	})
+	return wrapped
+}
+
+func fileHasInterpolationStrings(f *ast.File) bool {
+	skip := byteSliceStringLits(f)
+	found := false
+	ast.Inspect(f, func(n ast.Node) bool {
+		lit, ok := n.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING || !isDoubleQuoted(lit.Value) || skip[lit] {
+			return true
+		}
+		body := lit.Value[1 : len(lit.Value)-1]
+		for i := 0; i < len(body); i++ {
+			if body[i] != '{' {
+				continue
+			}
+			if _, isHole := scanInterpHole(body, i); isHole {
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+	return found
+}
+
+func ensureFmtImport(f *ast.File) {
+	if hasImportPath(f, "fmt") {
+		return
+	}
+	spec := &ast.ImportSpec{Path: &ast.BasicLit{Kind: token.STRING, Value: `"fmt"`}}
+	for _, decl := range f.Decls {
+		if g, ok := decl.(*ast.GenDecl); ok && g.Tok == token.IMPORT {
+			g.Specs = append(g.Specs, spec)
+			return
+		}
+	}
+	f.Decls = append([]ast.Decl{&ast.GenDecl{
+		Tok:   token.IMPORT,
+		Specs: []ast.Spec{spec},
+	}}, f.Decls...)
+}
+
+func hasImportPath(f *ast.File, path string) bool {
+	for _, decl := range f.Decls {
+		g, ok := decl.(*ast.GenDecl)
+		if !ok || g.Tok != token.IMPORT {
+			continue
+		}
+		for _, spec := range g.Specs {
+			imp, ok := spec.(*ast.ImportSpec)
+			if !ok {
+				continue
+			}
+			p, _ := strconv.Unquote(imp.Path.Value)
+			if p == path {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func collectConcatSegments(expr ast.Expr) ([]interpSegment, bool) {
 	be, ok := expr.(*ast.BinaryExpr)
 	if !ok || be.Op != token.ADD {
@@ -396,8 +474,12 @@ func renderInterpolatedString(fset *token.FileSet, segs []interpSegment) (string
 		if err := format.Node(&exprBuf, fset, seg.expr); err != nil {
 			return "", false
 		}
+		exprSrc := exprBuf.String()
+		if strings.Contains(exprSrc, `"`) {
+			return "", false
+		}
 		b.WriteByte('{')
-		b.WriteString(exprBuf.String())
+		b.WriteString(exprSrc)
 		if seg.format != "" {
 			b.WriteByte(':')
 			b.WriteString(seg.format)
