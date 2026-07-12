@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"go/ast"
 	"go/importer"
 	"go/token"
 	"go/types"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -43,6 +45,9 @@ func labelInterfaceNilComparisons(fset *token.FileSet, files []*ast.File, import
 			if _, ok := tv.Type.Underlying().(*types.Interface); !ok {
 				return true
 			}
+			if tv.Type == types.Universe.Lookup("error").Type() {
+				return true
+			}
 			pos := fset.Position(be.Pos())
 			key := pos.String()
 			if seen[key] {
@@ -51,6 +56,9 @@ func labelInterfaceNilComparisons(fset *token.FileSet, files []*ast.File, import
 			seen[key] = true
 			lineStart := lineStartOffset(fset, f, pos.Line)
 			if lineStart < 0 {
+				return true
+			}
+			if hasInterfaceNilEqFixme(fset, f, lineStart) {
 				return true
 			}
 			out[fi] = append(out[fi], sourceEdit{
@@ -78,6 +86,31 @@ func typecheckFiles(fset *token.FileSet, files []*ast.File, importPath string) (
 		return nil, false
 	}
 	return info, true
+}
+
+func hasInterfaceNilEqFixme(fset *token.FileSet, f *ast.File, lineStart int) bool {
+	tf := fset.File(f.Pos())
+	if tf == nil {
+		return false
+	}
+	data, err := os.ReadFile(tf.Name())
+	if err != nil || lineStart > len(data) {
+		return false
+	}
+	prefix := data[:lineStart]
+	if bytes.HasSuffix(prefix, []byte(interfaceNilEqFixme + "\n")) {
+		return true
+	}
+	// Also skip if FIXME is on the same line before the comparison.
+	pos := tf.Pos(lineStart)
+	line := tf.Position(pos).Line
+	lineOff := tf.Offset(tf.LineStart(line))
+	if lineOff < lineStart {
+		if bytes.Contains(data[lineOff:lineStart], []byte(interfaceNilEqFixme)) {
+			return true
+		}
+	}
+	return false
 }
 
 func lineStartOffset(fset *token.FileSet, f *ast.File, line int) int {

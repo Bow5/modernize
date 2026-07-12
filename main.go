@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
 	"path/filepath"
 	"sort"
@@ -239,6 +240,15 @@ func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (change
 	pkgEmbed := collectPackageEmbedOnlyTypes(files)
 	pkgExtraFields := collectPackageHasExtraErrorTypes(files)
 
+	var pkgTypesInfo *types.Info
+	if cfg.ForInSyntax || cfg.InterfaceNilEqComments {
+		modRoot, _ := findModuleRoot(pkg.dir)
+		importPath := packageImportPath(modRoot, pkg.dir)
+		if info, ok := typecheckFiles(fset, files, importPath); ok {
+			pkgTypesInfo = info
+		}
+	}
+
 	if cfg.InterfaceNilEqComments {
 		modRoot, _ := findModuleRoot(pkg.dir)
 		importPath := packageImportPath(modRoot, pkg.dir)
@@ -317,7 +327,7 @@ func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (change
 				interpChanged = true
 			}
 		}
-		_, countsPart, fileChanged, e := modernizeParsedFile(fset, files, files[i], path, nilableChanged[i] || literalChanged || interpChanged || nilRecvChanged[i] || ifaceNilChanged[i], pkgEmbed, pkgExtraFields, cfg, modIdx, true)
+		_, countsPart, fileChanged, e := modernizeParsedFile(fset, files, files[i], path, nilableChanged[i] || literalChanged || interpChanged || nilRecvChanged[i] || ifaceNilChanged[i], pkgEmbed, pkgExtraFields, cfg, modIdx, true, pkgTypesInfo)
 		if e != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", path, e)
 			continue
@@ -367,8 +377,8 @@ func modernizePackageOptionalChains(pkg pkgFiles, cfg Config, modIdx *moduleFunc
 	return changedPaths, counts, nil
 }
 
-func modernizeParsedFile(fset *token.FileSet, pkgFiles []*ast.File, f *ast.File, path string, forceWrite bool, pkgEmbed map[string]string, pkgExtraFields map[string][]string, cfg Config, modIdx *moduleFuncIndex, nilReceiversDone bool) (nilableChanged bool, counts rewriteCounts, changed bool, err error) {
-	mod := &fileModernizer{fset: fset, file: f, pkgEmbed: pkgEmbed, pkgExtraFields: pkgExtraFields, cfg: cfg}
+func modernizeParsedFile(fset *token.FileSet, pkgFiles []*ast.File, f *ast.File, path string, forceWrite bool, pkgEmbed map[string]string, pkgExtraFields map[string][]string, cfg Config, modIdx *moduleFuncIndex, nilReceiversDone bool, typesInfo *types.Info) (nilableChanged bool, counts rewriteCounts, changed bool, err error) {
+	mod := &fileModernizer{fset: fset, file: f, typesInfo: typesInfo, pkgEmbed: pkgEmbed, pkgExtraFields: pkgExtraFields, cfg: cfg}
 
 	if cfg.ErrBangSignatures {
 		ast.Inspect(f, func(n ast.Node) bool {
@@ -435,13 +445,14 @@ func modernizeFile(path string) (bool, int, error) {
 		modernizeNilReceivers(f, []*ast.File{f}, cfg, nil)
 	}
 	changedFlags, _ := applyPtrAnnotations(fset, []string{path}, []*ast.File{f})
-	_, countsPart, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, path, changedFlags[0], nil, nil, cfg, nil, true)
+	_, countsPart, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, path, changedFlags[0], nil, nil, cfg, nil, true, nil)
 	return changed, countsPart.callBang + countsPart.errBang, err
 }
 
 type fileModernizer struct {
 	fset             *token.FileSet
 	file             *ast.File
+	typesInfo        *types.Info
 	pkgEmbed         map[string]string   // embed-only error type → removed message field (package scope)
 	pkgExtraFields   map[string][]string // has-extra error type → domain field names (package scope)
 	cfg              Config
@@ -451,7 +462,7 @@ type fileModernizer struct {
 }
 
 func (m *fileModernizer) modernizeForIn() int {
-	n := modernizeForIn(m.file)
+	n := modernizeForIn(m.file, m.typesInfo)
 	if n > 0 {
 		m.mark()
 	}

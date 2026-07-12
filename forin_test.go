@@ -29,7 +29,7 @@ func f(items []string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	n := modernizeForIn(f)
+	n := modernizeForIn(f, nil)
 	if n != 3 {
 		t.Fatalf("modernizeForIn rewrote %d, want 3", n)
 	}

@@ -25,8 +25,8 @@ func f(err error, i I, s *int) {
 	}
 	editsByFile := labelInterfaceNilComparisons(fset, []*ast.File{f}, "example.com/p")
 	edits := editsByFile[0]
-	if len(edits) != 2 {
-		t.Fatalf("got %d labels, want 2", len(edits))
+	if len(edits) != 1 {
+		t.Fatalf("got %d labels, want 1 (error interface skipped)", len(edits))
 	}
 	for _, e := range edits {
 		if string(e.text) != interfaceNilEqFixme + "\n" {
