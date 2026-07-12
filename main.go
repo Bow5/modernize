@@ -317,10 +317,6 @@ func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (change
 				interpChanged = true
 			}
 		}
-		if fileHasInterpolationStrings(files[i]) && !hasImportPath(files[i], "fmt") {
-			ensureFmtImport(files[i])
-			interpChanged = true
-		}
 		_, countsPart, fileChanged, e := modernizeParsedFile(fset, files, files[i], path, nilableChanged[i] || literalChanged || interpChanged || nilRecvChanged[i] || ifaceNilChanged[i], pkgEmbed, pkgExtraFields, cfg, modIdx, true)
 		if e != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", path, e)

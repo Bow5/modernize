@@ -293,66 +293,6 @@ func byteSliceWrappedCalls(f *ast.File) map[*ast.CallExpr]bool {
 	return wrapped
 }
 
-func fileHasInterpolationStrings(f *ast.File) bool {
-	skip := byteSliceStringLits(f)
-	found := false
-	ast.Inspect(f, func(n ast.Node) bool {
-		lit, ok := n.(*ast.BasicLit)
-		if !ok || lit.Kind != token.STRING || !isDoubleQuoted(lit.Value) || skip[lit] {
-			return true
-		}
-		body := lit.Value[1 : len(lit.Value)-1]
-		for i := 0; i < len(body); i++ {
-			if body[i] != '{' {
-				continue
-			}
-			if _, isHole := scanInterpHole(body, i); isHole {
-				found = true
-				return false
-			}
-		}
-		return true
-	})
-	return found
-}
-
-func ensureFmtImport(f *ast.File) {
-	if hasImportPath(f, "fmt") {
-		return
-	}
-	spec := &ast.ImportSpec{Path: &ast.BasicLit{Kind: token.STRING, Value: `"fmt"`}}
-	for _, decl := range f.Decls {
-		if g, ok := decl.(*ast.GenDecl); ok && g.Tok == token.IMPORT {
-			g.Specs = append(g.Specs, spec)
-			return
-		}
-	}
-	f.Decls = append([]ast.Decl{&ast.GenDecl{
-		Tok:   token.IMPORT,
-		Specs: []ast.Spec{spec},
-	}}, f.Decls...)
-}
-
-func hasImportPath(f *ast.File, path string) bool {
-	for _, decl := range f.Decls {
-		g, ok := decl.(*ast.GenDecl)
-		if !ok || g.Tok != token.IMPORT {
-			continue
-		}
-		for _, spec := range g.Specs {
-			imp, ok := spec.(*ast.ImportSpec)
-			if !ok {
-				continue
-			}
-			p, _ := strconv.Unquote(imp.Path.Value)
-			if p == path {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func collectConcatSegments(expr ast.Expr) ([]interpSegment, bool) {
 	be, ok := expr.(*ast.BinaryExpr)
 	if !ok || be.Op != token.ADD {

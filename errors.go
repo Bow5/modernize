@@ -54,14 +54,8 @@ func (m *fileModernizer) modernizeStructuredErrors() (fmtErrorf, customErrors in
 	}
 	if m.cfg.FmtErrorfToErrorsNew {
 		fmtErrorf = em.rewriteFmtErrorfCalls()
-		if fmtErrorf > 0 && fileHasInterpolationStrings(em.file) {
-			ensureFmtImport(em.file)
-			em.mark()
-		}
 	}
-	if !fileHasInterpolationStrings(em.file) {
-		em.pruneUnusedImport("fmt")
-	}
+	em.pruneUnusedImport("fmt")
 	return fmtErrorf, customErrors
 }
 
