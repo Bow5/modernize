@@ -25,6 +25,9 @@ func TestConfigForNilableStep(t *testing.T) {
 	if !got.NilablePointersAnnotate || got.ErrBangSignatures || got.ShorthandTypes || got.RemoveNilReceiverGuards {
 		t.Fatalf("unexpected step config: %+v", got)
 	}
+	if got.NilCoalesceFallback {
+		t.Fatalf("expected nil_coalesce_fallback false in default step config: %+v", got)
+	}
 }
 
 func TestConfigForNilReceiverStep(t *testing.T) {

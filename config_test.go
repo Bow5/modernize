@@ -8,6 +8,9 @@ import (
 
 func TestDefaultConfigAllTrue(t *testing.T) {
 	cfg := DefaultConfig()
+	if cfg.NilCoalesceFallback {
+		t.Fatal("expected nil_coalesce_fallback default false")
+	}
 	if !cfg.NilablePointersGoMod || !cfg.NilablePointersAnnotate || !cfg.ErrBangSignatures ||
 		!cfg.ErrBangBody || !cfg.FmtErrorfToErrorsNew || !cfg.ErrorsBaseEmbed ||
 		!cfg.ErrorsBaseSetMsg || !cfg.ErrorsBasePositionalComposites ||

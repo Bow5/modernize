@@ -33,6 +33,7 @@ func main() {
 	if cfgPath != "" {
 		fmt.Fprintf(os.Stderr, "using config %s\n", cfgPath)
 	}
+	printNilCoalesceFallbackNotice(cfg.NilCoalesceFallback)
 
 	if cfg.StepCommits {
 		if vcsRoot, kind := findVCSRoot(absRoot); kind != "" {
@@ -96,7 +97,7 @@ func runModernize(absRoot string, cfg Config) (passSummary, error) {
 		return summary, err
 	}
 
-	if cfg.NilablePointersAnnotate || cfg.OptionalMethodChains {
+	if cfg.NilablePointersAnnotate || cfg.OptionalMethodChains || cfg.NilCoalesceFallback {
 		fieldPkgs := pkgs
 		if modRoot, ok := findModuleRoot(absRoot); ok {
 			if allPkgs, err := collectPackages(modRoot); err == nil {
@@ -139,7 +140,7 @@ func runModernize(absRoot string, cfg Config) (passSummary, error) {
 		if err != nil {
 			return summary, err
 		}
-		chainCfg := Config{OptionalMethodChains: true}
+		chainCfg := Config{OptionalMethodChains: true, NilCoalesceFallback: cfg.NilCoalesceFallback}
 		for _, pkg := range pkgs {
 			paths, n, e := modernizePackageOptionalChains(pkg, chainCfg, modIdx)
 			if e != nil {
@@ -171,7 +172,7 @@ func collectPackages(root string) ([]pkgFiles, error) {
 			}
 			return nil
 		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") || strings.HasSuffix(path, "_gen.go") {
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") || strings.HasSuffix(path, "_gen.go") || strings.HasSuffix(path, "_string.go") {
 			return nil
 		}
 		dir := filepath.Dir(path)
@@ -235,7 +236,7 @@ func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (change
 		}
 	}
 	if cfg.NilablePointersAnnotate {
-		nilableChanged, verifiedNonNil = applyPtrAnnotations(fset, pkg.paths, files)
+		nilableChanged, verifiedNonNil = applyPtrAnnotations(fset, pkg.paths, files, cfg.NilCoalesceFallback)
 	}
 	pkgEmbed := collectPackageEmbedOnlyTypes(files)
 	pkgExtraFields := collectPackageHasExtraErrorTypes(files)
@@ -314,7 +315,7 @@ func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (change
 			if readErr != nil {
 				return nil, counts, readErr
 			}
-			edits, n := modernizeInterpolatedStrings(fset, files[i], src)
+			edits, n := modernizeInterpolatedStrings(fset, files[i], src, pkgTypesInfo)
 			counts.interpolatedStrings += n
 			if len(edits) > 0 {
 				src = applySourceEdits(src, edits)
@@ -364,7 +365,10 @@ func modernizePackageOptionalChains(pkg pkgFiles, cfg Config, modIdx *moduleFunc
 	for i, path := range pkg.paths {
 		_, chains := modernizeNilReceivers(files[i], files, cfg, modIdx)
 		counts.optionalChains += chains
-		coalesced := coalesceModuleSliceFieldCallArgs(files[i], fset, path)
+		coalesced := false
+		if cfg.NilCoalesceFallback {
+			coalesced = coalesceModuleSliceFieldCallArgs(files[i], fset, path)
+		}
 		if chains == 0 && !coalesced {
 			continue
 		}
@@ -444,7 +448,7 @@ func modernizeFile(path string) (bool, int, error) {
 	if cfg.RemoveNilReceiverGuards || cfg.OptionalMethodChains {
 		modernizeNilReceivers(f, []*ast.File{f}, cfg, nil)
 	}
-	changedFlags, _ := applyPtrAnnotations(fset, []string{path}, []*ast.File{f})
+	changedFlags, _ := applyPtrAnnotations(fset, []string{path}, []*ast.File{f}, cfg.NilCoalesceFallback)
 	_, countsPart, changed, err := modernizeParsedFile(fset, []*ast.File{f}, f, path, changedFlags[0], nil, nil, cfg, nil, true, nil)
 	return changed, countsPart.callBang + countsPart.errBang, err
 }

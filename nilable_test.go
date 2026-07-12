@@ -6,6 +6,24 @@ import (
 	"testing"
 )
 
+func TestUpgradeNilablePointersDirective(t *testing.T) {
+	const input = `module example.com/app
+
+go 1.27
+
+nilable_pointers enable
+
+require example.com/lib v0.0.0
+`
+	got := strings.Replace(input, "nilable_pointers enable", "nilable_pointers warnings", 1)
+	if !strings.Contains(got, "nilable_pointers warnings") {
+		t.Fatalf("missing warnings directive:\n%s", got)
+	}
+	if strings.Contains(got, "nilable_pointers enable") {
+		t.Fatalf("still has enable:\n%s", got)
+	}
+}
+
 func TestInsertNilablePointersDirective(t *testing.T) {
 	const input = `module example.com/app
 
@@ -14,7 +32,7 @@ go 1.27
 require example.com/lib v0.0.0
 `
 	got := insertNilablePointersDirective(input)
-	if !strings.Contains(got, "nilable_pointers enable") {
+	if !strings.Contains(got, "nilable_pointers warnings") {
 		t.Fatalf("missing directive:\n%s", got)
 	}
 	if strings.Count(got, "nilable_pointers") != 1 {

@@ -148,7 +148,7 @@ var modernizeSteps = []modernizeStep{
 		name:      "nilable_pointers",
 		commitMsg: "modernize: nilable pointer annotations",
 		enabled: func(c Config) bool {
-			return c.NilablePointersGoMod || c.NilablePointersGenDisable || c.NilablePointersAnnotate
+			return c.NilablePointersGoMod || c.NilablePointersGenDisable || c.NilablePointersAnnotate || c.NilCoalesceFallback
 		},
 		stepConfig: func(base Config) Config {
 			return Config{
@@ -156,6 +156,7 @@ var modernizeSteps = []modernizeStep{
 				NilablePointersGenDisable: base.NilablePointersGenDisable,
 				NilablePointersAnnotate:   base.NilablePointersAnnotate,
 				OptionalMethodChains:      base.OptionalMethodChains,
+				NilCoalesceFallback:       base.NilCoalesceFallback,
 			}
 		},
 	},
@@ -299,7 +300,7 @@ func collectGoSourceFiles(root string) ([]string, error) {
 			}
 			return nil
 		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") || strings.HasSuffix(path, "_gen.go") {
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") || strings.HasSuffix(path, "_gen.go") || strings.HasSuffix(path, "_string.go") {
 			return nil
 		}
 		paths = append(paths, path)

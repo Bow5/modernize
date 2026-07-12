@@ -10,7 +10,7 @@ Run with Bow as `GOROOT`. Output uses fork-only syntax (`T!`, `expr!`, `*T?`).
 
 | Category | Config flag | Active by default? |
 |----------|-------------|----------------------|
-| `go.mod` `nilable_pointers enable` | `nilable_pointers_go_mod` | Yes |
+| `go.mod` `nilable_pointers warnings` | `nilable_pointers_go_mod` | Yes |
 | `*_gen.go` nilable disable directive | `nilable_pointers_gen_disable` | Yes |
 | Nilable pointer type inference (`*T` / `*T?`) | `nilable_pointers_annotate` | Yes |
 | `err!` propagation / error-return cleanup | `err_bang_body` | Yes |
@@ -41,7 +41,7 @@ module example.com/app
 
 go 1.27
 
-nilable_pointers enable
+nilable_pointers warnings
 ```
 
 ### `*_gen.go` — disable nilable pointers

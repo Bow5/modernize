@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"strings"
 )
 
 func modernizeForIn(f *ast.File, info *types.Info) int {
@@ -14,12 +15,18 @@ func modernizeForIn(f *ast.File, info *types.Info) int {
 			return true
 		}
 		if rs.InPos.IsValid() {
-			// Fix mistaken `for v, _ in seq` where v is a value, not an index.
+			// Fix mistaken `for v, _ in seq/ch` on value-only ranges.
 			if rs.Value != nil && isBlankIdent(rs.Value) && rs.Key != nil && !isBlankIdent(rs.Key) {
-				if singleRangeVarIsValue(info, rs.X) {
-					v := rs.Key
-					rs.Key = &ast.Ident{NamePos: v.Pos(), Name: "_"}
-					rs.Value = v
+				if singleRangeVarIsValue(f, info, rs.X) {
+					rs.Value = nil
+					count++
+				}
+			}
+			// Fix mistaken `for _, v in ch/seq` on value-only ranges.
+			if rs.Value != nil && !isBlankIdent(rs.Value) && rs.Key != nil && isBlankIdent(rs.Key) {
+				if singleRangeVarIsValue(f, info, rs.X) {
+					rs.Key = rs.Value
+					rs.Value = nil
 					count++
 				}
 			}
@@ -29,11 +36,8 @@ func modernizeForIn(f *ast.File, info *types.Info) int {
 			if rs.Key == nil || isBlankIdent(rs.Key) {
 				return true
 			}
-			if singleRangeVarIsValue(info, rs.X) {
-				v := rs.Key
-				rs.Key = &ast.Ident{NamePos: v.Pos(), Name: "_"}
-				rs.Value = v
-				rs.InPos = v.End()
+			if singleRangeVarIsValue(f, info, rs.X) {
+				rs.InPos = rs.Key.End()
 				rs.Range = token.NoPos
 				count++
 				return true
@@ -55,9 +59,11 @@ func modernizeForIn(f *ast.File, info *types.Info) int {
 			count++
 			return true
 		}
-		// for _, v := range x -> for v in x
-		rs.Key = rs.Value
-		rs.Value = nil
+		// for _, v := range x -> for v in x (value-only) or for _, v in x (index+value)
+		if singleRangeVarIsValue(f, info, rs.X) {
+			rs.Key = rs.Value
+			rs.Value = nil
+		}
 		rs.InPos = rs.Key.End()
 		rs.Range = token.NoPos
 		count++
@@ -68,11 +74,29 @@ func modernizeForIn(f *ast.File, info *types.Info) int {
 
 // singleRangeVarIsValue reports whether `for v := range x` binds v to the
 // iteration value (channel receive, iter.Seq) rather than an index/key.
-func singleRangeVarIsValue(info *types.Info, x ast.Expr) bool {
+func singleRangeVarIsValue(f *ast.File, info *types.Info, x ast.Expr) bool {
 	if v, ok := singleRangeVarIsValueType(info, x); ok {
 		return v
 	}
-	return splitSeqRangeExpr(x)
+	if splitSeqRangeExpr(x) {
+		return true
+	}
+	return likelyChannelRangeExpr(f, x)
+}
+
+func likelyChannelRangeExpr(f *ast.File, x ast.Expr) bool {
+	id, ok := ast.Unparen(x).(*ast.Ident)
+	if !ok {
+		return false
+	}
+	name := id.Name
+	if strings.HasSuffix(name, "Ch") || strings.HasSuffix(name, "ch") {
+		return true
+	}
+	if fileDeclIsChanType(f, name) {
+		return true
+	}
+	return fileFuncParamIsChanType(f, name)
 }
 
 func singleRangeVarIsValueType(info *types.Info, x ast.Expr) (bool, bool) {
@@ -110,7 +134,15 @@ func splitSeqRangeExpr(x ast.Expr) bool {
 		return false
 	}
 	id, ok := ast.Unparen(sel.X).(*ast.Ident)
-	return ok && id.Name == "strings" && sel.Sel.Name == "SplitSeq"
+	if !ok || id.Name != "strings" {
+		return false
+	}
+	switch sel.Sel.Name {
+	case "SplitSeq", "FieldsSeq", "LinesSeq", "Seq":
+		return true
+	default:
+		return false
+	}
 }
 
 func isBlankIdent(e ast.Expr) bool {

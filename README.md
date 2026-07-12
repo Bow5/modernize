@@ -12,12 +12,20 @@ See **[docs/config.md](docs/config.md)** to enable or disable individual rewrite
 
 ### Nilable pointers
 
-Adds `nilable_pointers enable` to `go.mod` when missing, then annotates pointer types:
+Adds `nilable_pointers warnings` to `go.mod` when missing, then annotates pointer types:
 
 - `*T?` when nil can flow in (nil assignment, `return nil`, `nil` arguments, zero-init `var p *T`, `json:",omitempty"` pointer fields)
 - `*T` (strict) when no nil evidence is found in the package — preferred wherever inference allows
 
 Respects `//go:nilable_pointers disable` … `end` regions (those types are left unchanged).
+
+Optional `??` zero fallback for nilable slice fields (`nil_coalesce_fallback`, default **off**):
+
+```go
+consume(key.Plaintext ?? []byte{})
+```
+
+Set `"nil_coalesce_fallback": true` in `modernize.json` to enable; when off, modernize prints a notice with this example.
 
 **Example:**
 

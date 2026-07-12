@@ -7,7 +7,8 @@ import (
 	"path/filepath"
 )
 
-// Config toggles each modernization pass. All flags default to true.
+// Config toggles each modernization pass. All flags default to true except
+// nil_coalesce_fallback, which defaults to false.
 type Config struct {
 	NilablePointersGoMod           bool `json:"nilable_pointers_go_mod"`
 	NilablePointersGenDisable      bool `json:"nilable_pointers_gen_disable"`
@@ -30,6 +31,7 @@ type Config struct {
 	StepCommits                    bool `json:"step_commits"`
 	RemoveNilReceiverGuards        bool `json:"remove_nil_receiver_guards"`
 	OptionalMethodChains           bool `json:"optional_method_chains"`
+	NilCoalesceFallback            bool `json:"nil_coalesce_fallback"`
 }
 
 func DefaultConfig() Config {
@@ -55,7 +57,18 @@ func DefaultConfig() Config {
 		StepCommits:                    true,
 		RemoveNilReceiverGuards:        true,
 		OptionalMethodChains:           true,
+		NilCoalesceFallback:            false,
 	}
+}
+
+func printNilCoalesceFallbackNotice(enabled bool) {
+	if enabled {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "nil_coalesce_fallback: false (skipped)")
+	fmt.Fprintln(os.Stderr, "  Wraps nilable slice field args with ?? zero fallback, for example:")
+	fmt.Fprintln(os.Stderr, "    consume(key.Plaintext ?? []byte{})")
+	fmt.Fprintln(os.Stderr, "  Set \"nil_coalesce_fallback\": true in modernize.json to enable.")
 }
 
 func loadConfig(targetRoot string) (Config, string, error) {

@@ -82,7 +82,8 @@ func typecheckFiles(fset *token.FileSet, files []*ast.File, importPath string) (
 		Defs:  make(map[*ast.Ident]types.Object),
 		Uses:  make(map[*ast.Ident]types.Object),
 	}
-	if _, err := cfg.Check(importPath, fset, files, info); err != nil {
+	_, err := cfg.Check(importPath, fset, files, info)
+	if err != nil && len(info.Types) == 0 {
 		return nil, false
 	}
 	return info, true

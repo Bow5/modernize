@@ -2,4 +2,4 @@ module modernize
 
 go 1.27
 
-nilable_pointers enable
+nilable_pointers warnings

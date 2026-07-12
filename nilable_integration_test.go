@@ -236,7 +236,7 @@ func (c *tracer) subroute(s string) *tracer {
 	if ann.nilable[key] {
 		t.Fatal("nil-receiver guard return nil should not mark result nilable")
 	}
-	changed, _ := applyPtrAnnotations(fset, []string{"p.go"}, []*ast.File{f})
+	changed, _ := applyPtrAnnotations(fset, []string{"p.go"}, []*ast.File{f}, false)
 	if changed[0] {
 		t.Fatal("expected no pointer type rewrite")
 	}
@@ -264,7 +264,7 @@ func open() (*Client, error) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	changed, _ := applyPtrAnnotations(fset, []string{"p.go"}, []*ast.File{f})
+	changed, _ := applyPtrAnnotations(fset, []string{"p.go"}, []*ast.File{f}, false)
 	if !changed[0] {
 		t.Fatal("expected pointer annotation changes")
 	}
@@ -309,7 +309,7 @@ func (r *Reader) read() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	changed, _ := applyPtrAnnotations(fset, []string{"p.go"}, []*ast.File{f})
+	changed, _ := applyPtrAnnotations(fset, []string{"p.go"}, []*ast.File{f}, false)
 	if !changed[0] {
 		t.Fatal("expected pointer annotation changes")
 	}
@@ -340,7 +340,7 @@ func setHeaders(rs *HTTPRangeSpec) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	changed, _ := applyPtrAnnotations(fset, []string{"p.go"}, []*ast.File{f})
+	changed, _ := applyPtrAnnotations(fset, []string{"p.go"}, []*ast.File{f}, false)
 	if !changed[0] {
 		t.Fatal("expected pointer annotation changes")
 	}

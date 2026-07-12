@@ -29,7 +29,7 @@ func findModuleRoot(start string) (string, bool) {
 	}
 }
 
-// ensureNilablePointers adds `nilable_pointers enable` to go.mod when missing.
+// ensureNilablePointers adds or upgrades `nilable_pointers warnings` in go.mod.
 func ensureNilablePointers(modRoot string) (bool, error) {
 	modPath := filepath.Join(modRoot, "go.mod")
 	data, err := os.ReadFile(modPath)
@@ -37,14 +37,31 @@ func ensureNilablePointers(modRoot string) (bool, error) {
 		return false, err
 	}
 	content := string(data)
-	if hasNilablePointersDirective(content) {
-		return false, nil
+	if dir := goModNilablePointersDirective(content); dir != "" {
+		if dir == "nilable_pointers warnings" {
+			return false, nil
+		}
+		updated := strings.Replace(content, dir, "nilable_pointers warnings", 1)
+		if updated == content {
+			return false, nil
+		}
+		return true, os.WriteFile(modPath, []byte(updated), 0)
 	}
 	updated := insertNilablePointersDirective(content)
 	if updated == content {
 		return false, nil
 	}
 	return true, os.WriteFile(modPath, []byte(updated), 0)
+}
+
+func goModNilablePointersDirective(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "nilable_pointers ") {
+			return line
+		}
+	}
+	return ""
 }
 
 func hasNilablePointersDirective(content string) bool {
@@ -68,7 +85,7 @@ func insertNilablePointersDirective(content string) string {
 		}
 		trim := strings.TrimSpace(line)
 		if strings.HasPrefix(trim, "go 1.") {
-			out = append(out, "", "nilable_pointers enable")
+			out = append(out, "", "nilable_pointers warnings")
 			inserted = true
 			continue
 		}
@@ -77,7 +94,7 @@ func insertNilablePointersDirective(content string) string {
 			next := strings.TrimSpace(lines[i + 1])
 			if trim != "" && !strings.HasPrefix(trim, "module ") && !strings.HasPrefix(trim, "go 1.") &&
 				(strings.HasPrefix(next, "require") || next == "" || strings.HasPrefix(next, "replace")) {
-				out = append(out, "", "nilable_pointers enable")
+				out = append(out, "", "nilable_pointers warnings")
 				inserted = true
 			}
 		}
@@ -86,7 +103,7 @@ func insertNilablePointersDirective(content string) string {
 		if len(out) > 0 && out[len(out) - 1] != "" {
 			out = append(out, "")
 		}
-		out = append(out, "nilable_pointers enable")
+		out = append(out, "nilable_pointers warnings")
 	}
 	// Normalize trailing newline.
 	result := strings.Join(out, "\n")

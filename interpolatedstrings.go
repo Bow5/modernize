@@ -7,6 +7,7 @@ import (
 	"go/format"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"strconv"
 	"strings"
 )
@@ -17,7 +18,7 @@ type interpSegment struct {
 	format  string // without leading %
 }
 
-func modernizeInterpolatedStrings(fset *token.FileSet, f *ast.File, src []byte) (edits []sourceEdit, count int) {
+func modernizeInterpolatedStrings(fset *token.FileSet, f *ast.File, src []byte, typesInfo *types.Info) (edits []sourceEdit, count int) {
 	// Order: Sprintf → *f funcs → errors.New → concat → escape literal braces.
 	byteSliceParents := byteSliceParentsOfSprintf(f)
 	edits, n := rewriteSprintfToInterp(fset, f, src, edits, byteSliceParents)
@@ -26,7 +27,7 @@ func modernizeInterpolatedStrings(fset *token.FileSet, f *ast.File, src []byte) 
 	count += n
 	edits, n = rewriteErrorsNewToInterp(fset, f, src, edits)
 	count += n
-	edits, n = rewriteConcatToInterp(fset, f, src, edits)
+	edits, n = rewriteConcatToInterp(fset, f, src, edits, typesInfo)
 	count += n
 	edits, n = escapeLiteralBraces(fset, f, src, edits)
 	count += n
@@ -205,7 +206,7 @@ func rewriteErrorsNewToInterp(fset *token.FileSet, f *ast.File, src []byte, edit
 	return edits, count
 }
 
-func rewriteConcatToInterp(fset *token.FileSet, f *ast.File, src []byte, edits []sourceEdit) ([]sourceEdit, int) {
+func rewriteConcatToInterp(fset *token.FileSet, f *ast.File, src []byte, edits []sourceEdit, typesInfo *types.Info) ([]sourceEdit, int) {
 	var adds []*ast.BinaryExpr
 	ast.Inspect(f, func(n ast.Node) bool {
 		if be, ok := n.(*ast.BinaryExpr); ok && be.Op == token.ADD {
@@ -239,6 +240,17 @@ func rewriteConcatToInterp(fset *token.FileSet, f *ast.File, src []byte, edits [
 		if !concatIncludesStringLiteral(segs) {
 			continue
 		}
+		if typesInfo != nil {
+			if t := typesInfo.TypeOf(be); t == nil || !isTypesString(t) {
+				continue
+			}
+		}
+		if concatExprHasStringLiteral(segs) {
+			continue
+		}
+		if concatExprHasSlice(segs) {
+			continue
+		}
 		text, ok := renderInterpolatedString(fset, segs)
 		if !ok {
 			continue
@@ -267,6 +279,55 @@ func concatIncludesStringLiteral(segs []interpSegment) bool {
 		}
 	}
 	return false
+}
+
+func concatExprHasStringLiteral(segs []interpSegment) bool {
+	for _, s := range segs {
+		if exprHasStringLiteral(s.expr) {
+			return true
+		}
+	}
+	return false
+}
+
+func exprHasStringLiteral(expr ast.Expr) bool {
+	if expr == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(expr, func(n ast.Node) bool {
+		if lit, ok := n.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+func concatExprHasSlice(segs []interpSegment) bool {
+	for _, s := range segs {
+		if exprHasSlice(s.expr) {
+			return true
+		}
+	}
+	return false
+}
+
+func exprHasSlice(expr ast.Expr) bool {
+	if expr == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(expr, func(n ast.Node) bool {
+		switch n.(type) {
+		case *ast.IndexExpr, *ast.SliceExpr:
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 func isByteSliceCast(call *ast.CallExpr) bool {
@@ -580,4 +641,12 @@ func splitInterpInside(inside string) (expr, format string) {
 		return strings.TrimSpace(inside), ""
 	}
 	return strings.TrimSpace(inside[:colon]), strings.TrimSpace(inside[colon + 1:])
+}
+
+func isTypesString(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	b, ok := t.Underlying().(*types.Basic)
+	return ok && b.Kind() == types.String
 }

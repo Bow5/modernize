@@ -58,7 +58,7 @@ func f(name string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	edits, n := rewriteConcatToInterp(fset, f, []byte(src), nil)
+	edits, n := rewriteConcatToInterp(fset, f, []byte(src), nil, nil)
 	if n != 1 {
 		t.Fatalf("rewrote %d, want 1", n)
 	}
@@ -77,7 +77,7 @@ func f(i int) int {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, n := rewriteConcatToInterp(fset, f, nil, nil)
+	_, n := rewriteConcatToInterp(fset, f, nil, nil, nil)
 	if n != 0 {
 		t.Fatalf("rewrote %d, want 0 for integer add", n)
 	}

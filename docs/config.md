@@ -1,6 +1,6 @@
 # modernize — configuration
 
-Each rewrite pass can be turned on or off with `modernize.json`. **All flags default to `true`.** Omit a key to keep the default.
+Each rewrite pass can be turned on or off with `modernize.json`. **All flags default to `true`, except `nil_coalesce_fallback` (default `false`).** Omit a key to keep the default.
 
 ## Config file location
 
@@ -50,7 +50,7 @@ To disable only `errors.Base` embedding:
 
 | Flag | Default | What it does |
 |------|---------|--------------|
-| `nilable_pointers_go_mod` | `true` | Add `nilable_pointers enable` to `go.mod` when missing |
+| `nilable_pointers_go_mod` | `true` | Add `nilable_pointers warnings` to `go.mod` when missing |
 | `nilable_pointers_gen_disable` | `true` | Prepend `//go:nilable_pointers disable` to `*_gen.go` files |
 | `nilable_pointers_annotate` | `true` | Rewrite pointer types to `*T` / `*T?` from nil-flow evidence (see [examples.md §2](examples.md#2-nilable-pointers-t--t)) |
 | `err_bang_signatures` | `true` | Convert `(T, error)` → `T!` on functions and interface methods; rewrite matching `if err != nil` bodies in newly converted functions |
@@ -67,6 +67,7 @@ To disable only `errors.Base` embedding:
 | `step_commits` | `true` | When the target is in a git or hg repo, run each pass separately and commit its changes (formatting first, then nil receivers, nilable pointers, `T!` / `!`, structured errors, shorthand) |
 | `remove_nil_receiver_guards` | `true` | Remove `if recv == nil { return … }` guards in pointer-receiver methods (unreachable in Bow — [nil receivers](../../go/doc/new_features/nil_receivers.md)) |
 | `optional_method_chains` | `true` | Add `?.` for nilable field reads and for methods that previously had `if recv == nil { return nil / zero }` guards. Does **not** insert `if recv != nil` wrappers around nilable method calls — leave `reqInfo.SetTags(...)` as-is. |
+| `nil_coalesce_fallback` | `false` | Wrap nilable slice field arguments with `??` zero fallback (e.g. `consume(key.Plaintext ?? []byte{})`). When disabled, modernize prints a notice with example syntax. |
 
 ## Step commits
 

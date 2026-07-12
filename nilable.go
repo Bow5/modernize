@@ -1762,7 +1762,7 @@ func formatTypeZero(typ ast.Expr) string {
 	return buf.String() + "{}"
 }
 
-func applyPtrAnnotations(fset *token.FileSet, paths []string, files []*ast.File) (changed []bool, verifiedNonNil int) {
+func applyPtrAnnotations(fset *token.FileSet, paths []string, files []*ast.File, nilCoalesceFallback bool) (changed []bool, verifiedNonNil int) {
 	ann := newPtrAnnotator(fset, files)
 	ann.analyze()
 	verifiedNonNil = ann.countVerifiedNonNilPointers()
@@ -1779,10 +1779,10 @@ func applyPtrAnnotations(fset *token.FileSet, paths []string, files []*ast.File)
 		if rewriteChanNilSends(f, ann) {
 			fileChanged = true
 		}
-		if rewriteNilableSliceFieldArgs(f, fset, ann, path) {
+		if nilCoalesceFallback && rewriteNilableSliceFieldArgs(f, fset, ann, path) {
 			fileChanged = true
 		}
-		if coalesceModuleSliceFieldCallArgs(f, fset, path) {
+		if nilCoalesceFallback && coalesceModuleSliceFieldCallArgs(f, fset, path) {
 			fileChanged = true
 		}
 		if splitNilOrReturnGuards(fset, f, ann) {
