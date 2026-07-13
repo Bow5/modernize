@@ -455,10 +455,11 @@ func collectConcatSegments(expr ast.Expr) ([]interpSegment, bool) {
 
 func escapeLiteralBraces(fset *token.FileSet, f *ast.File, src []byte, edits []sourceEdit) ([]sourceEdit, int) {
 	skip := byteSliceStringLits(f)
+	errorsNewLits := errorsNewStringLits(f)
 	count := 0
 	ast.Inspect(f, func(n ast.Node) bool {
 		lit, ok := n.(*ast.BasicLit)
-		if !ok || lit.Kind != token.STRING || !isDoubleQuoted(lit.Value) || skip[lit] {
+		if !ok || lit.Kind != token.STRING || !isDoubleQuoted(lit.Value) || skip[lit] || errorsNewLits[lit] {
 			return true
 		}
 		rewritten, changed := rewriteLiteralBraces(lit.Value)
@@ -472,6 +473,30 @@ func escapeLiteralBraces(fset *token.FileSet, f *ast.File, src []byte, edits []s
 		return true
 	})
 	return edits, count
+}
+
+func isErrorsNew(call *ast.CallExpr) bool {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	id, ok := sel.X.(*ast.Ident)
+	return ok && id.Name == "errors" && sel.Sel.Name == "New"
+}
+
+func errorsNewStringLits(f *ast.File) map[*ast.BasicLit]bool {
+	lits := map[*ast.BasicLit]bool{}
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || len(call.Args) == 0 || !isErrorsNew(call) {
+			return true
+		}
+		if lit, ok := call.Args[0].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+			lits[lit] = true
+		}
+		return true
+	})
+	return lits
 }
 
 func isFmtIdent(x ast.Expr) bool {
@@ -533,8 +558,11 @@ func scanPrintfVerb(s string) (verb string, n int, ok bool) {
 
 func printfVerbToInterp(verb string) string {
 	v := strings.TrimSpace(verb)
-	if v == "" || v == "v" || v == "s" {
-		return ""
+	if v == "" || v == "v" {
+		return "v"
+	}
+	if v == "s" {
+		return "s"
 	}
 	return v
 }
@@ -570,10 +598,12 @@ func renderInterpolatedString(fset *token.FileSet, segs []interpSegment) (string
 		exprSrc := exprBuf.String()
 		b.WriteByte('{')
 		b.WriteString(exprSrc)
-		if seg.format != "" {
-			b.WriteByte(':')
-			b.WriteString(seg.format)
+		fmtSpec := seg.format
+		if fmtSpec == "" {
+			fmtSpec = "v"
 		}
+		b.WriteByte(':')
+		b.WriteString(fmtSpec)
 		b.WriteByte('}')
 	}
 	b.WriteByte('"')

@@ -54,7 +54,7 @@ func h(err error) error {
 	if !strings.Contains(out, `errors.New("something failed")`) {
 		t.Fatalf("missing errors.New:\n%s", out)
 	}
-	if !strings.Contains(out, `errors.New("value {name}")`) {
+	if !strings.Contains(out, `errors.New("value {name:s}")`) {
 		t.Fatalf("missing interpolated errors.New, got:\n%s", out)
 	}
 	if !strings.Contains(out, `fmt.Errorf("wrap: %w", err)`) {

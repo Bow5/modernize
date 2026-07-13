@@ -1795,7 +1795,7 @@ func applyPtrAnnotations(fset *token.FileSet, paths []string, files []*ast.File,
 		if nilCoalesceFallback && rewriteNilableSliceFieldArgs(f, fset, ann, path) {
 			fileChanged = true
 		}
-		if nilCoalesceFallback && coalesceModuleSliceFieldCallArgs(f, fset, path) {
+		if coalesceModuleSliceFieldCallArgs(f, fset, path) {
 			fileChanged = true
 		}
 		if splitNilOrReturnGuards(fset, f, ann) {

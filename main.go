@@ -390,10 +390,7 @@ func modernizePackageOptionalChains(pkg pkgFiles, cfg Config, modIdx *moduleFunc
 		}
 		_, chains := modernizeNilReceivers(files[i], files, cfg, modIdx)
 		counts.optionalChains += chains
-		coalesced := false
-		if cfg.NilCoalesceFallback {
-			coalesced = coalesceModuleSliceFieldCallArgs(files[i], fset, path)
-		}
+		coalesced := coalesceModuleSliceFieldCallArgs(files[i], fset, path)
 		if chains == 0 && !coalesced {
 			continue
 		}

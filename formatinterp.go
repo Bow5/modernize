@@ -117,12 +117,3 @@ func matchFormatFuncRewrite(sel *ast.SelectorExpr) (formatFuncRewrite, bool) {
 	}
 	return formatFuncRewrite{}, false
 }
-
-func isErrorsNew(call *ast.CallExpr) bool {
-	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return false
-	}
-	id, ok := sel.X.(*ast.Ident)
-	return ok && id.Name == "errors" && sel.Sel.Name == "New"
-}

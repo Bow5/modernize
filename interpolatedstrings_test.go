@@ -126,7 +126,7 @@ func f(name string) string {
 	if n != 1 {
 		t.Fatalf("rewrote %d, want 1", n)
 	}
-	if string(edits[0].text) != `"hello {name}!"` {
+	if string(edits[0].text) != `"hello {name:v}!"` {
 		t.Fatalf("got %q", edits[0].text)
 	}
 }
@@ -162,7 +162,7 @@ func f(name string) {
 	if n != 1 {
 		t.Fatalf("rewrote %d, want 1", n)
 	}
-	if !strings.Contains(string(edits[0].text), `fmt.Print("hello {name}")`) {
+	if !strings.Contains(string(edits[0].text), `fmt.Print("hello {name:s}")`) {
 		t.Fatalf("got %q", edits[0].text)
 	}
 }
@@ -183,8 +183,25 @@ func f(endpoint string, err error) error {
 		t.Fatalf("rewrote %d, want 1", n)
 	}
 	got := string(edits[0].text)
-	if !strings.Contains(got, `errors.New("invalid {endpoint}`) {
+	if !strings.Contains(got, `errors.New("invalid {endpoint:s}: {err:v}")`) {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestEscapeLiteralBracesSkipsErrorsNew(t *testing.T) {
+	const src = `package p
+import "errors"
+func f(str string) error {
+	return errors.New("ParseBool: parsing '{str}': {strconv.ErrSyntax}")
+}`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edits, n := escapeLiteralBraces(fset, f, []byte(src), nil)
+	if n != 0 {
+		t.Fatalf("rewrote %d edits, want 0; got %v", n, edits)
 	}
 }
 
@@ -207,7 +224,7 @@ func f(name string) error {
 		t.Fatalf("rewrote %d, want 1", n)
 	}
 	got := string(edits[0].text)
-	want := `config.Error[ErrConfigGeneric]("bad {name}")`
+	want := `config.Error[ErrConfigGeneric]("bad {name:s}")`
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}
