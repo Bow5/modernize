@@ -121,6 +121,9 @@ type nilGuardIndex struct {
 func buildNilReceiverGuardIndex(files []*ast.File) *nilGuardIndex {
 	idx := &nilGuardIndex{methods: map[methodKey]bool{}}
 	for _, f := range files {
+		if f == nil {
+			continue
+		}
 		for _, decl := range f.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Recv == nil || fn.Body == nil || fn.Name == nil {
@@ -178,6 +181,9 @@ func buildReturnTypeIndex(files []*ast.File) *returnTypeIndex {
 		methods: map[methodKey][]ast.Expr{},
 	}
 	for _, f := range files {
+		if f == nil {
+			continue
+		}
 		for _, decl := range f.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Name == nil || fn.Type == nil {
@@ -404,6 +410,9 @@ func wrapNullCond(e ast.Expr) ast.Expr {
 }
 
 func modernizeNilReceivers(f *ast.File, files []*ast.File, cfg Config, modIdx *moduleFuncIndex) (guards, chains int) {
+	if f == nil {
+		return 0, 0
+	}
 	guardIdx := buildNilReceiverGuardIndex(files)
 	returns := buildReturnTypeIndex(files)
 	if cfg.OptionalMethodChains {
@@ -440,6 +449,9 @@ type structFieldIndex struct {
 func buildStructFieldIndex(files []*ast.File) *structFieldIndex {
 	idx := &structFieldIndex{fields: map[string]map[string]ast.Expr{}}
 	for _, f := range files {
+		if f == nil {
+			continue
+		}
 		for _, decl := range f.Decls {
 			gen, ok := decl.(*ast.GenDecl)
 			if !ok || gen.Tok != token.TYPE {
@@ -485,6 +497,9 @@ type funcVarIndex struct {
 func buildPkgVarIndex(files []*ast.File) map[string]ast.Expr {
 	vars := map[string]ast.Expr{}
 	for _, f := range files {
+		if f == nil {
+			continue
+		}
 		for _, decl := range f.Decls {
 			gen, ok := decl.(*ast.GenDecl)
 			if !ok || gen.Tok != token.VAR {
@@ -520,6 +535,9 @@ func buildFuncVarIndex(files []*ast.File, returns *returnTypeIndex, modIdx *modu
 		pkgVars: pkgVars,
 	}
 	for _, f := range files {
+		if f == nil {
+			continue
+		}
 		for _, decl := range f.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Body == nil {

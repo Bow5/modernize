@@ -35,10 +35,20 @@ type ptrAnnotator struct {
 	funcs           map[string][]*ast.FuncDecl
 }
 
+func nonNilFiles(files []*ast.File) []*ast.File {
+	var out []*ast.File
+	for _, f := range files {
+		if f != nil {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 func newPtrAnnotator(fset *token.FileSet, files []*ast.File) *ptrAnnotator {
 	return &ptrAnnotator{
 		fset:            fset,
-		files:           files,
+		files:           nonNilFiles(files),
 		nilable:         make(map[ptrSiteKey]bool),
 		chanElemNilable: make(map[ptrSiteKey]bool),
 		ifaceImplTypes:  make(map[string]bool),
@@ -1768,6 +1778,9 @@ func applyPtrAnnotations(fset *token.FileSet, paths []string, files []*ast.File,
 	verifiedNonNil = ann.countVerifiedNonNilPointers()
 	changed = make([]bool, len(files))
 	for i, f := range files {
+		if f == nil {
+			continue
+		}
 		path := ""
 		if i < len(paths) {
 			path = paths[i]
@@ -2167,6 +2180,9 @@ func nptDisabledAt(fset *token.FileSet, pos token.Pos, files []*ast.File) bool {
 		return false
 	}
 	for _, f := range files {
+		if f == nil {
+			continue
+		}
 		if pos < f.Pos() || pos > f.End() {
 			continue
 		}
