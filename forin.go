@@ -81,7 +81,23 @@ func singleRangeVarIsValue(f *ast.File, info *types.Info, x ast.Expr) bool {
 	if splitSeqRangeExpr(x) {
 		return true
 	}
+	if sel, ok := ast.Unparen(x).(*ast.SelectorExpr); ok {
+		if fieldNameLooksLikeValueOnlyRange(sel.Sel.Name) {
+			return true
+		}
+		if fileStructFieldIsChan(f, sel) {
+			return true
+		}
+	}
 	return likelyChannelRangeExpr(f, x)
+}
+
+func fieldNameLooksLikeValueOnlyRange(name string) bool {
+	switch name {
+	case "input", "stream", "logCh":
+		return true
+	}
+	return strings.HasSuffix(name, "Ch") || strings.HasSuffix(name, "ch")
 }
 
 func likelyChannelRangeExpr(f *ast.File, x ast.Expr) bool {

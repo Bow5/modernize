@@ -82,3 +82,24 @@ func fileFuncParamIsChanType(f *ast.File, name string) bool {
 	})
 	return found
 }
+
+func fileStructFieldIsChan(f *ast.File, sel *ast.SelectorExpr) bool {
+	field := sel.Sel.Name
+	found := false
+	ast.Inspect(f, func(n ast.Node) bool {
+		ts, ok := n.(*ast.TypeSpec)
+		if !ok || ts.Type == nil {
+			return true
+		}
+		st, ok := ts.Type.(*ast.StructType)
+		if !ok || st.Fields == nil {
+			return true
+		}
+		if fieldListHasChanNamed(st.Fields, field) {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}

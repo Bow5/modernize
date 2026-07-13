@@ -8,11 +8,64 @@ import (
 )
 
 func TestEscapeNonInterpBraces(t *testing.T) {
-	got, changed := escapeNonInterpBraces(`"a {} brace"`)
+	got, changed := rewriteLiteralBraces(`"a {} brace"`)
 	if !changed {
 		t.Fatal("expected change")
 	}
-	want := `"a \{\} brace"`
+	want := "`a {} brace`"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestMuxTemplateToRawString(t *testing.T) {
+	got, changed := rewriteLiteralBraces(`"{key:.*}"`)
+	if !changed {
+		t.Fatal("expected change")
+	}
+	want := "`{key:.*}`"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestEscapeLiteralBracesOnRouterCall(t *testing.T) {
+	const src = `package cmd
+func f() {
+	Queries("key", "{key:.*}")
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "router.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edits, n := escapeLiteralBraces(fset, f, []byte(src), nil)
+	if n != 1 {
+		t.Fatalf("escapeLiteralBraces rewrote %d, want 1", n)
+	}
+	if !strings.Contains(string(edits[0].text), "`{key:.*}`") {
+		t.Fatalf("got %q", edits[0].text)
+	}
+}
+
+func TestMuxTemplateWithBacktickFallsBackToEscape(t *testing.T) {
+	got, changed := rewriteLiteralBraces(`"prefix ` + "`" + ` suffix {key:.*}"`)
+	if !changed {
+		t.Fatal("expected change")
+	}
+	want := `"prefix ` + "`" + ` suffix \\{key:.*\\}"`
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestMuxTemplateInInterpStringEscaped(t *testing.T) {
+	got, changed := rewriteLiteralBraces(`"route {key:.*} price {price:.2f}"`)
+	if !changed {
+		t.Fatal("expected change")
+	}
+	want := `"route \\{key:.*\\} price {price:.2f}"`
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}
@@ -121,5 +174,30 @@ func f(endpoint string, err error) error {
 	got := string(edits[0].text)
 	if !strings.Contains(got, `errors.New("invalid {endpoint}`) {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestConfigErrorfToError(t *testing.T) {
+	const src = `package p
+
+import "github.com/example/config"
+
+func f(name string) error {
+	return config.Errorf("bad %s", name)
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edits, n := rewriteFormatFuncsToNonF(fset, f, []byte(src), nil, nil)
+	if n != 1 {
+		t.Fatalf("rewrote %d, want 1", n)
+	}
+	got := string(edits[0].text)
+	want := `config.Error[ErrConfigGeneric]("bad {name}")`
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
 	}
 }

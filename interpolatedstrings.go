@@ -117,11 +117,6 @@ func rewriteFormatFuncsToNonF(fset *token.FileSet, f *ast.File, src []byte, edit
 		if rw.method == "Errorf" && isFmtErrorf(call) {
 			return true // structured_errors handles fmt.Errorf → errors.New
 		}
-		if rw.method == "Errorf" && rw.pkg == "" {
-			if id, ok := ast.Unparen(sel.X).(*ast.Ident); ok && id.Name == "config" {
-				return true // config.Error is generic; keep config.Errorf
-			}
-		}
 		if rw.formatIndex >= len(call.Args) {
 			return true
 		}
@@ -134,7 +129,12 @@ func rewriteFormatFuncsToNonF(fset *token.FileSet, f *ast.File, src []byte, edit
 		if !ok {
 			return true
 		}
-		text, ok := renderNonFCall(fset, sel.X, rw.nonF, rw.formatIndex, call.Args[:rw.formatIndex], interp)
+		var text string
+		if rw.method == "Errorf" && isConfigIdent(sel.X) {
+			text, ok = renderConfigErrorCall(fset, sel.X, interp)
+		} else {
+			text, ok = renderNonFCall(fset, sel.X, rw.nonF, rw.formatIndex, call.Args[:rw.formatIndex], interp)
+		}
 		if !ok {
 			return true
 		}
@@ -150,6 +150,25 @@ func rewriteFormatFuncsToNonF(fset *token.FileSet, f *ast.File, src []byte, edit
 		return true
 	})
 	return edits, count
+}
+
+func isConfigIdent(x ast.Expr) bool {
+	id, ok := ast.Unparen(x).(*ast.Ident)
+	return ok && id.Name == "config"
+}
+
+// renderConfigErrorCall rewrites config.Errorf(...) to config.Error[ErrConfigGeneric](...).
+// The type parameter is required because config.Error is generic and cannot be inferred
+// from an interpolated string argument alone.
+func renderConfigErrorCall(fset *token.FileSet, recv ast.Expr, interp string) (string, bool) {
+	var b strings.Builder
+	if err := format.Node(&b, fset, recv); err != nil {
+		return "", false
+	}
+	b.WriteString(".Error[ErrConfigGeneric](")
+	b.WriteString(interp)
+	b.WriteByte(')')
+	return b.String(), true
 }
 
 func renderNonFCall(fset *token.FileSet, recv ast.Expr, nonF string, formatIndex int, prefixArgs []ast.Expr, interp string) (string, bool) {
@@ -434,13 +453,13 @@ func escapeLiteralBraces(fset *token.FileSet, f *ast.File, src []byte, edits []s
 		if !ok || lit.Kind != token.STRING || !isDoubleQuoted(lit.Value) || skip[lit] {
 			return true
 		}
-		escaped, changed := escapeNonInterpBraces(lit.Value)
+		rewritten, changed := rewriteLiteralBraces(lit.Value)
 		if !changed {
 			return true
 		}
 		start := fset.Position(lit.Pos()).Offset
 		end := fset.Position(lit.End()).Offset
-		edits = append(edits, sourceEdit{start: start, end: end, text: []byte(escaped)})
+		edits = append(edits, sourceEdit{start: start, end: end, text: []byte(rewritten)})
 		count++
 		return true
 	})
@@ -560,16 +579,97 @@ func writeEscapedStringContent(b *strings.Builder, s string) {
 	}
 }
 
-func escapeNonInterpBraces(quoted string) (string, bool) {
+// rewriteLiteralBraces rewrites double-quoted strings that contain route/query
+// templates (e.g. "{key:.*}") or other non-interpolation braces. Prefer raw
+// backtick strings; fall back to \{ \} escapes when a raw string is unsafe.
+func rewriteLiteralBraces(quoted string) (string, bool) {
 	if !isDoubleQuoted(quoted) {
 		return quoted, false
 	}
-	body := quoted[1 : len(quoted) - 1]
-	if stringHasInterpHoles(body) {
+	body, err := strconv.Unquote(quoted)
+	if err != nil {
 		return quoted, false
 	}
+	if !strings.ContainsAny(body, "{}") {
+		return quoted, false
+	}
+	if stringHasRealInterpHoles(body) {
+		escaped, changed := escapeNonInterpolationBraces(body)
+		if !changed {
+			return quoted, false
+		}
+		return doubleQuotedFromContent(escaped), true
+	}
+	if canUseRawString(body) {
+		return "`" + body + "`", true
+	}
+	escaped, changed := escapeNonInterpolationBraces(body)
+	if !changed {
+		return quoted, false
+	}
+	return doubleQuotedFromContent(escaped), true
+}
+
+func canUseRawString(body string) bool {
+	return !strings.Contains(body, "`")
+}
+
+func doubleQuotedFromContent(body string) string {
+	return strconv.Quote(body)
+}
+
+// isMuxFormatSpec reports whether the portion after ':' in a brace hole is a
+// gorilla/mux route/query pattern rather than printf-style interpolation.
+func isMuxFormatSpec(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	if strings.Contains(s, ".+") || strings.Contains(s, ".*") {
+		return true
+	}
+	if strings.ContainsAny(s, "[]") {
+		return true
+	}
+	return false
+}
+
+func isMuxTemplateHole(inside string) bool {
+	_, format := splitInterpInside(inside)
+	return isMuxFormatSpec(format)
+}
+
+func isRealInterpHole(body string, start int) bool {
+	end, ok := scanInterpHole(body, start)
+	if !ok {
+		return false
+	}
+	inside := body[start + 1 : end]
+	if isMuxTemplateHole(inside) {
+		return false
+	}
+	return true
+}
+
+func stringHasRealInterpHoles(body string) bool {
+	for i := 0; i < len(body); i++ {
+		if body[i] != '{' {
+			continue
+		}
+		if i > 0 && body[i - 1] == '\\' {
+			continue
+		}
+		if isRealInterpHole(body, i) {
+			return true
+		}
+	}
+	return false
+}
+
+// escapeNonInterpolationBraces escapes mux templates and other literal braces,
+// leaving real interpolation holes unchanged.
+func escapeNonInterpolationBraces(body string) (string, bool) {
 	var out strings.Builder
-	out.WriteByte('"')
 	changed := false
 	for i := 0; i < len(body); i++ {
 		ch := body[i]
@@ -579,40 +679,41 @@ func escapeNonInterpBraces(quoted string) (string, bool) {
 			i++
 			continue
 		}
-		if ch == '{' {
-			if end, isHole := scanInterpHole(body, i); isHole {
-				out.WriteString(body[i : end + 1])
-				i = end
-				continue
-			}
+		if ch != '{' {
+			out.WriteByte(ch)
+			continue
+		}
+		end, ok := scanInterpHole(body, i)
+		if !ok {
 			out.WriteString(`\{`)
 			changed = true
 			continue
 		}
-		if ch == '}' {
+		inside := body[i + 1 : end]
+		if isMuxTemplateHole(inside) {
+			out.WriteString(`\{`)
+			out.WriteString(inside)
 			out.WriteString(`\}`)
 			changed = true
+			i = end
 			continue
 		}
-		out.WriteByte(ch)
+		if isRealInterpHole(body, i) {
+			out.WriteString(body[i : end + 1])
+			i = end
+			continue
+		}
+		out.WriteString(`\{`)
+		out.WriteString(inside)
+		out.WriteString(`\}`)
+		changed = true
+		i = end
 	}
-	out.WriteByte('"')
 	return out.String(), changed
 }
 
-func stringHasInterpHoles(body string) bool {
-	for i := 0; i < len(body); i++ {
-		if body[i] != '{' {
-			continue
-		}
-		if i > 0 && body[i - 1] == '\\' {
-			continue
-		}
-		if _, ok := scanInterpHole(body, i); ok {
-			return true
-		}
-	}
-	return false
+func escapeNonInterpBraces(quoted string) (string, bool) {
+	return rewriteLiteralBraces(quoted)
 }
 
 func scanInterpHole(body string, start int) (end int, ok bool) {
