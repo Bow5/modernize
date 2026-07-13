@@ -259,9 +259,9 @@ func runFormattingPass(root, vcsRoot string, kind vcsKind) ([]string, error) {
 	if !ok {
 		modRoot = root
 	}
-	cmd := exec.Command("go", "fmt", "./...")
+	cmd := exec.Command(goTool("go"), "fmt", "./...")
 	cmd.Dir = modRoot
-	cmd.Env = os.Environ()
+	cmd.Env = bowEnv()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("go fmt: %v: %s", err, strings.TrimSpace(string(out)))
 	}

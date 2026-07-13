@@ -7,7 +7,6 @@ import (
 	"go/format"
 	"go/token"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -122,6 +121,16 @@ func isSkippedDir(name string) bool {
 	}
 }
 
+func writeSourceFile(path string, src []byte) error {
+	if err := os.WriteFile(path, src, 0); err != nil {
+		return err
+	}
+	if out, err := runGoFmt("-w", path); err != nil {
+		return fmt.Errorf("gofmt %s: %v: %s", path, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 func writeFormattedFile(path string, fset *token.FileSet, f *ast.File) error {
 	var out bytes.Buffer
 	if err := format.Node(&out, fset, f); err != nil {
@@ -131,12 +140,7 @@ func writeFormattedFile(path string, fset *token.FileSet, f *ast.File) error {
 	if err := os.WriteFile(path, data, 0); err != nil {
 		return err
 	}
-	gofmtPath := "gofmt"
-	if goroot := os.Getenv("GOROOT"); goroot != "" {
-		gofmtPath = filepath.Join(goroot, "bin", "gofmt")
-	}
-	cmd := exec.Command(gofmtPath, "-w", path)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := runGoFmt("-w", path); err != nil {
 		return fmt.Errorf("gofmt %s: %v: %s", path, err, strings.TrimSpace(string(out)))
 	}
 	return nil

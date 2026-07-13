@@ -645,7 +645,15 @@ func isRealInterpHole(body string, start int) bool {
 		return false
 	}
 	inside := body[start + 1 : end]
+	exprPart, format := splitInterpInside(inside)
+	if format == "" {
+		// {name} without format is a gorilla/mux path/query param, not interpolation.
+		return false
+	}
 	if isMuxTemplateHole(inside) {
+		return false
+	}
+	if strings.TrimSpace(exprPart) == "" {
 		return false
 	}
 	return true

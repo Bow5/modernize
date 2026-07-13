@@ -101,12 +101,21 @@ func fieldNameLooksLikeValueOnlyRange(name string) bool {
 }
 
 func likelyChannelRangeExpr(f *ast.File, x ast.Expr) bool {
+	if callExprLooksLikeChannelStream(x) {
+		return true
+	}
 	id, ok := ast.Unparen(x).(*ast.Ident)
 	if !ok {
 		return false
 	}
 	name := id.Name
 	if strings.HasSuffix(name, "Ch") || strings.HasSuffix(name, "ch") {
+		return true
+	}
+	if name == "stream" {
+		return true
+	}
+	if identAssignedFromMakeChan(f, name, id.Pos()) {
 		return true
 	}
 	if fileDeclIsChanType(f, name) {

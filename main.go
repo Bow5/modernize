@@ -33,6 +33,10 @@ func main() {
 	if cfgPath != "" {
 		fmt.Fprintf(os.Stderr, "using config %s\n", cfgPath)
 	}
+	if err := verifyBowParser(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	printNilCoalesceFallbackNotice(cfg.NilCoalesceFallback)
 
 	if cfg.StepCommits {
@@ -213,11 +217,11 @@ func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (change
 	fset := token.NewFileSet()
 	files := make([]*ast.File, len(pkg.paths))
 	for i, path := range pkg.paths {
-		f, e := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		f, e := parseModernizeFile(fset, path)
 		if e != nil {
-			return nil, counts, e
+			fmt.Fprintf(os.Stderr, "%s: %v\n", path, e)
+			continue
 		}
-		f.NilablePointersRegions = buildNilablePointersRegions(collectNilablePointersDirectives(f))
 		files[i] = f
 	}
 
@@ -227,6 +231,9 @@ func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (change
 	var verifiedNonNil int
 	if cfg.RemoveNilReceiverGuards || cfg.OptionalMethodChains {
 		for i, f := range files {
+			if f == nil {
+				continue
+			}
 			guards, chains := modernizeNilReceivers(f, files, cfg, modIdx)
 			counts.nilRecvGuards += guards
 			counts.optionalChains += chains
@@ -264,11 +271,11 @@ func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (change
 				return nil, counts, readErr
 			}
 			src = applySourceEdits(src, edits)
-			f, e := parser.ParseFile(fset, path, src, parser.ParseComments)
+			f, e := reparseModernizeFile(fset, path, src)
 			if e != nil {
-				return nil, counts, e
+				fmt.Fprintf(os.Stderr, "%s: %v\n", path, e)
+				continue
 			}
-			f.NilablePointersRegions = buildNilablePointersRegions(collectNilablePointersDirectives(f))
 			files[fi] = f
 			counts.interfaceNilEq += len(edits)
 			ifaceNilChanged[fi] = true
@@ -276,6 +283,9 @@ func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (change
 	}
 
 	for i, path := range pkg.paths {
+		if files[i] == nil {
+			continue
+		}
 		literalChanged := false
 		interpChanged := false
 		if cfg.ShorthandLiterals || cfg.SpreadCallSyntax || cfg.NegativeSliceIndices {
@@ -301,11 +311,17 @@ func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (change
 			}
 			if len(edits) > 0 {
 				src = applySourceEdits(src, edits)
-				f, e := parser.ParseFile(fset, path, src, parser.ParseComments)
+				f, e := reparseModernizeFile(fset, path, src)
 				if e != nil {
-					return nil, counts, e
+					if werr := writeSourceFile(path, src); werr != nil {
+						fmt.Fprintf(os.Stderr, "%s: %v\n", path, werr)
+					} else {
+						changedPaths = append(changedPaths, path)
+						fmt.Println(path)
+						literalChanged = true
+					}
+					continue
 				}
-				f.NilablePointersRegions = buildNilablePointersRegions(collectNilablePointersDirectives(f))
 				files[i] = f
 				literalChanged = true
 			}
@@ -319,11 +335,17 @@ func modernizePackage(pkg pkgFiles, cfg Config, modIdx *moduleFuncIndex) (change
 			counts.interpolatedStrings += n
 			if len(edits) > 0 {
 				src = applySourceEdits(src, edits)
-				f, e := parser.ParseFile(fset, path, src, parser.ParseComments)
+				f, e := reparseModernizeFile(fset, path, src)
 				if e != nil {
-					return nil, counts, e
+					if werr := writeSourceFile(path, src); werr != nil {
+						fmt.Fprintf(os.Stderr, "%s: %v\n", path, werr)
+					} else {
+						changedPaths = append(changedPaths, path)
+						fmt.Println(path)
+						interpChanged = true
+					}
+					continue
 				}
-				f.NilablePointersRegions = buildNilablePointersRegions(collectNilablePointersDirectives(f))
 				files[i] = f
 				interpChanged = true
 			}
@@ -355,14 +377,17 @@ func modernizePackageOptionalChains(pkg pkgFiles, cfg Config, modIdx *moduleFunc
 	fset := token.NewFileSet()
 	files := make([]*ast.File, len(pkg.paths))
 	for i, path := range pkg.paths {
-		f, e := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		f, e := parseModernizeFile(fset, path)
 		if e != nil {
-			return nil, counts, e
+			fmt.Fprintf(os.Stderr, "%s: %v\n", path, e)
+			continue
 		}
-		f.NilablePointersRegions = buildNilablePointersRegions(collectNilablePointersDirectives(f))
 		files[i] = f
 	}
 	for i, path := range pkg.paths {
+		if files[i] == nil {
+			continue
+		}
 		_, chains := modernizeNilReceivers(files[i], files, cfg, modIdx)
 		counts.optionalChains += chains
 		coalesced := false

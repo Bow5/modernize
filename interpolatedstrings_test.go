@@ -29,6 +29,17 @@ func TestMuxTemplateToRawString(t *testing.T) {
 	}
 }
 
+func TestHealPathToBacktick(t *testing.T) {
+	got, changed := rewriteLiteralBraces(`"/heal/{bucket}/{prefix:.*}"`)
+	if !changed {
+		t.Fatal("expected change")
+	}
+	want := "`/heal/{bucket}/{prefix:.*}`"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
 func TestEscapeLiteralBracesOnRouterCall(t *testing.T) {
 	const src = `package cmd
 func f() {

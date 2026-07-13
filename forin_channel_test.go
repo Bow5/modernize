@@ -51,6 +51,63 @@ func f(logCh chan interface{}) {
 	}
 }
 
+func TestFixChannelForInMakeChanLocal(t *testing.T) {
+	const src = `package grid
+
+type Resp struct{}
+
+func f() {
+	outT := make(chan Resp)
+	for v, _ in outT {
+		_ = v
+	}
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "handlers.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := modernizeForIn(f, nil)
+	if n != 1 {
+		t.Fatalf("modernizeForIn rewrote %d, want 1", n)
+	}
+	var buf strings.Builder
+	if err := format.Node(&buf, fset, f); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "for v in outT") {
+		t.Fatalf("expected for v in outT:\n%s", buf.String())
+	}
+}
+
+func TestFixChannelForInStreamCall(t *testing.T) {
+	const src = `package p
+
+func f(d interface{ Stream() chan int }) {
+	for mv, _ in d.Stream() {
+		_ = mv
+	}
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := modernizeForIn(f, nil)
+	if n != 1 {
+		t.Fatalf("modernizeForIn rewrote %d, want 1", n)
+	}
+	var buf strings.Builder
+	if err := format.Node(&buf, fset, f); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "for mv in d.Stream()") {
+		t.Fatalf("expected for mv in d.Stream():\n%s", buf.String())
+	}
+}
+
 func TestFixChannelForInSelectorInput(t *testing.T) {
 	const src = `package csv
 
