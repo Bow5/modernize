@@ -15,7 +15,7 @@ Rewrites long-form composite literals to shorthand syntax when the explicit type
 | `set.Of("a", "b")` | `{"a", "b"}` | Yes |
 | `set.Of[int64](1, 2)` | (unchanged) | No |
 
-The same rule applies to maps and sets. Empty literals (`[]int{}`, `map[string]int{}`, `set.Of()`) are always rewritten.
+The same rule applies to maps and sets. Empty literals (`[]int{}`, `map[string]int{}`, `set.Of()`) are not rewritten because shorthand `[]` and `{}` drop the type prefix and are not always inferable from context.
 
 See also [syntax.md](../../go/doc/new_features/syntax.md#array-map-and-set-literals) in the Go fork docs.
 

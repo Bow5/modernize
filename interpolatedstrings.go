@@ -19,17 +19,19 @@ type interpSegment struct {
 }
 
 func modernizeInterpolatedStrings(fset *token.FileSet, f *ast.File, src []byte, typesInfo *types.Info) (edits []sourceEdit, count int) {
-	// Order: Sprintf → *f funcs → errors.New → concat → escape literal braces.
+	// Escape literal braces in existing strings before building new interpolated
+	// strings; otherwise mux-style holes like {key:.*} get misclassified.
+	edits, n := escapeLiteralBraces(fset, f, src, edits)
+	count += n
+	// Order: Sprintf → *f funcs → errors.New → concat.
 	byteSliceParents := byteSliceParentsOfSprintf(f)
-	edits, n := rewriteSprintfToInterp(fset, f, src, edits, byteSliceParents)
+	edits, n = rewriteSprintfToInterp(fset, f, src, edits, byteSliceParents)
 	count += n
 	edits, n = rewriteFormatFuncsToNonF(fset, f, src, edits, byteSliceParents)
 	count += n
 	edits, n = rewriteErrorsNewToInterp(fset, f, src, edits)
 	count += n
 	edits, n = rewriteConcatToInterp(fset, f, src, edits, typesInfo)
-	count += n
-	edits, n = escapeLiteralBraces(fset, f, src, edits)
 	count += n
 	return edits, count
 }
@@ -78,6 +80,9 @@ func rewriteSprintfToInterp(fset *token.FileSet, f *ast.File, src []byte, edits 
 			segs = append(segs, interpSegment{literal: part.text})
 		}
 		if argIdx != len(call.Args) - 1 {
+			return true
+		}
+		if !interpolatedSegmentsSafe(fset, segs) {
 			return true
 		}
 		text, ok := renderInterpolatedString(fset, segs)
@@ -268,6 +273,9 @@ func rewriteConcatToInterp(fset *token.FileSet, f *ast.File, src []byte, edits [
 			continue
 		}
 		if concatExprHasSlice(segs) {
+			continue
+		}
+		if !interpolatedSegmentsSafe(fset, segs) {
 			continue
 		}
 		text, ok := renderInterpolatedString(fset, segs)
@@ -529,6 +537,22 @@ func printfVerbToInterp(verb string) string {
 		return ""
 	}
 	return v
+}
+
+func interpolatedSegmentsSafe(fset *token.FileSet, segs []interpSegment) bool {
+	for _, seg := range segs {
+		if seg.expr == nil {
+			continue
+		}
+		var exprBuf bytes.Buffer
+		if err := format.Node(&exprBuf, fset, seg.expr); err != nil {
+			return false
+		}
+		if strings.Contains(exprBuf.String(), `"`) {
+			return false
+		}
+	}
+	return true
 }
 
 func renderInterpolatedString(fset *token.FileSet, segs []interpSegment) (string, bool) {

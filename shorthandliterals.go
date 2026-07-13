@@ -76,7 +76,7 @@ func shorthandSetOfEdit(fset *token.FileSet, call *ast.CallExpr) (sourceEdit, bo
 	start := fset.Position(call.Pos()).Offset
 	end := fset.Position(call.End()).Offset
 	if len(call.Args) == 0 {
-		return sourceEdit{start: start, end: end, text: []byte("{}")}, true
+		return sourceEdit{}, false
 	}
 	var buf bytes.Buffer
 	buf.WriteByte('{')

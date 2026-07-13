@@ -11,7 +11,9 @@ func shorthandSliceRewriteOK(lit *ast.CompositeLit) bool {
 		return false
 	}
 	if len(lit.Elts) == 0 {
-		return true
+		// Empty []/map literals lose their type prefix; shorthand [] and {}
+		// are not always inferable from context (e.g. targets := [] then append).
+		return false
 	}
 	inferred, ok := inferShorthandElemTypes(lit.Elts)
 	if !ok {
@@ -26,7 +28,9 @@ func shorthandMapRewriteOK(lit *ast.CompositeLit) bool {
 		return false
 	}
 	if len(lit.Elts) == 0 {
-		return true
+		// Empty []/map literals lose their type prefix; shorthand [] and {}
+		// are not always inferable from context (e.g. targets := [] then append).
+		return false
 	}
 	var keyInferred, valInferred ast.Expr
 	for i, el := range lit.Elts {
@@ -60,7 +64,7 @@ func shorthandMapRewriteOK(lit *ast.CompositeLit) bool {
 
 func shorthandSetOfRewriteOK(call *ast.CallExpr) bool {
 	if len(call.Args) == 0 {
-		return true
+		return false
 	}
 	if typeArg, ok := setOfTypeArg(call); ok {
 		inferred, ok := inferShorthandElemTypes(call.Args)

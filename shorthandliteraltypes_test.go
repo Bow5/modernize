@@ -17,6 +17,7 @@ func TestShorthandSliceRewriteOK(t *testing.T) {
 		{`package p; func f() { _ = []int64{int64(1)} }`, true},
 		{`package p; type U struct{Name string}; func f() { _ = []U{U{"bob"}} }`, true},
 		{`package p; type U struct{Name string}; type I interface{}; func f() { _ = []I{U{"bob"}} }`, false},
+		{`package p; func f() { _ = []int{} }`, false},
 	}
 	for _, tc := range tests {
 		fset := token.NewFileSet()
@@ -38,6 +39,7 @@ func TestShorthandMapRewriteOK(t *testing.T) {
 	}{
 		{`package p; func f() { _ = map[string]int{"a": 1} }`, true},
 		{`package p; func f() { _ = map[string]int64{"a": 1} }`, false},
+		{`package p; func f() { _ = map[string]int{} }`, false},
 	}
 	for _, tc := range tests {
 		fset := token.NewFileSet()
