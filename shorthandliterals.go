@@ -22,7 +22,7 @@ func shorthandCompositeEdit(fset *token.FileSet, lit *ast.CompositeLit) ([]sourc
 	openEnd := fset.Position(lit.Lbrace + 1).Offset
 	switch t := lit.Type.(type) {
 	case *ast.ArrayType:
-		if t.Len != nil || !lit.Rbrace.IsValid() || len(lit.Elts) > 0 || !shorthandSliceRewriteOK(lit) {
+		if t.Len != nil || !lit.Rbrace.IsValid() || !shorthandSliceRewriteOK(lit) {
 			return nil, false
 		}
 		closeStart := fset.Position(lit.Rbrace).Offset
@@ -32,7 +32,7 @@ func shorthandCompositeEdit(fset *token.FileSet, lit *ast.CompositeLit) ([]sourc
 			{start: closeStart, end: closeEnd, text: []byte("]")},
 		}, true
 	case *ast.MapType:
-		if len(lit.Elts) > 0 || !shorthandMapRewriteOK(lit) {
+		if !shorthandMapRewriteOK(lit) {
 			return nil, false
 		}
 		return []sourceEdit{{start: start, end: openEnd, text: []byte("{")}}, true
