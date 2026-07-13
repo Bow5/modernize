@@ -23,6 +23,9 @@ func labelInterfaceNilComparisons(fset *token.FileSet, files []*ast.File, import
 		return out
 	}
 	for fi, f := range files {
+		if f == nil {
+			continue
+		}
 		seen := map[string]bool{}
 		ast.Inspect(f, func(n ast.Node) bool {
 			be, ok := n.(*ast.BinaryExpr)
@@ -76,13 +79,22 @@ func typecheckFiles(fset *token.FileSet, files []*ast.File, importPath string) (
 	if importPath == "" {
 		importPath = "p"
 	}
+	var parsed []*ast.File
+	for _, f := range files {
+		if f != nil {
+			parsed = append(parsed, f)
+		}
+	}
+	if len(parsed) == 0 {
+		return nil, false
+	}
 	cfg := &types.Config{Importer: importer.Default()}
 	info := &types.Info{
 		Types: make(map[ast.Expr]types.TypeAndValue),
 		Defs:  make(map[*ast.Ident]types.Object),
 		Uses:  make(map[*ast.Ident]types.Object),
 	}
-	_, err := cfg.Check(importPath, fset, files, info)
+	_, err := cfg.Check(importPath, fset, parsed, info)
 	if err != nil && len(info.Types) == 0 {
 		return nil, false
 	}

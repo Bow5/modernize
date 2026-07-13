@@ -126,7 +126,7 @@ func writeSourceFile(path string, src []byte) error {
 		return err
 	}
 	if out, err := runGoFmt("-w", path); err != nil {
-		return fmt.Errorf("gofmt %s: %v: %s", path, err, strings.TrimSpace(string(out)))
+		fmt.Fprintf(os.Stderr, "gofmt %s: %v: %s (left unformatted)\n", path, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
@@ -141,7 +141,7 @@ func writeFormattedFile(path string, fset *token.FileSet, f *ast.File) error {
 		return err
 	}
 	if out, err := runGoFmt("-w", path); err != nil {
-		return fmt.Errorf("gofmt %s: %v: %s", path, err, strings.TrimSpace(string(out)))
+		fmt.Fprintf(os.Stderr, "gofmt %s: %v: %s (left unformatted)\n", path, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

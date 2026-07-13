@@ -519,6 +519,9 @@ func firstTypeParamName(fn *ast.FuncDecl) string {
 func collectPackageEmbedOnlyTypes(files []*ast.File) map[string]string {
 	out := map[string]string{}
 	for _, f := range files {
+		if f == nil {
+			continue
+		}
 		em := &errorsModernizer{
 			fileModernizer: &fileModernizer{file: f},
 			types:          map[string]*customErrorType{},
@@ -536,6 +539,9 @@ func collectPackageEmbedOnlyTypes(files []*ast.File) map[string]string {
 func collectPackageHasExtraErrorTypes(files []*ast.File) map[string][]string {
 	out := map[string][]string{}
 	for _, f := range files {
+		if f == nil {
+			continue
+		}
 		em := &errorsModernizer{
 			fileModernizer: &fileModernizer{file: f},
 			types:          map[string]*customErrorType{},
